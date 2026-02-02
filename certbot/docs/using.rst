@@ -14,32 +14,47 @@ obtaining, renewing, or revoking certificates. The most important
 and commonly-used commands will be discussed throughout this
 document; an exhaustive list also appears near the end of the document.
 
-The ``certbot`` script on your web server might be named ``letsencrypt`` if your system uses an older package, or ``certbot-auto`` if you used an alternate installation method. Throughout the docs, whenever you see ``certbot``, swap in the correct name as needed.
+The ``certbot`` script on your web server might be named ``letsencrypt`` if your system uses an older package. Throughout the docs, whenever you see ``certbot``, swap in the correct name as needed.
 
 .. _plugins:
 
 Getting certificates (and choosing plugins)
 ===========================================
 
-The Certbot client supports two types of plugins for
-obtaining and installing certificates: authenticators and installers.
+Certbot helps you achieve two tasks:
 
-Authenticators are plugins used with the ``certonly`` command to obtain a certificate.
-The authenticator validates that you
-control the domain(s) you are requesting a certificate for, obtains a certificate for the specified
-domain(s), and places the certificate in the ``/etc/letsencrypt`` directory on your
-machine. The authenticator does not install the certificate (it does not edit any of your server's configuration files to serve the
-obtained certificate). If you specify multiple domains to authenticate, they will
-all be listed in a single certificate. To obtain multiple separate certificates
-you will need to run Certbot multiple times.
+1. Obtaining a certificate: automatically performing the required authentication steps to prove that you control the domain(s),
+   saving the certificate to ``/etc/letsencrypt/live/`` and renewing it on a regular schedule.
+2. Optionally, installing that certificate to supported web servers (like Apache or nginx) and other kinds of servers. This is
+   done by automatically modifying the configuration of your server in order to use the certificate.
 
-Installers are Plugins used with the ``install`` command to install a certificate.
-These plugins can modify your webserver's configuration to
-serve your website over HTTPS using certificates obtained by certbot.
+To obtain a certificate and also install it, use the ``certbot run`` command (or ``certbot``, which is the same).
 
-Plugins that do both can be used with the ``certbot run`` command, which is the default
-when no command is specified. The ``run`` subcommand can also be used to specify
-a combination_ of distinct authenticator and installer plugins.
+To just obtain the certificate without installing it anywhere, the ``certbot certonly`` ("certificate only") command can be used.
+
+Some example ways to use Certbot::
+
+    # Obtain and install a certificate:
+    certbot
+
+    # Obtain a certificate but don't install it:
+    certbot certonly
+
+    # You may specify multiple domains with -d and obtain and
+    # install different certificates by running Certbot multiple times:
+    certbot certonly -d example.com -d www.example.com
+    certbot certonly -d app.example.com -d api.example.com
+
+To perform these tasks, Certbot will ask you to choose from a selection of authenticator and installer plugins. The appropriate
+choice of plugins will depend on what kind of server software you are running and plan to use your certificates with.
+
+**Authenticators** are plugins which automatically perform the required steps to prove that you control the domain names you're trying
+to request a certificate for. An authenticator is always required to obtain a certificate.
+
+**Installers** are plugins which can automatically modify your web server's configuration to serve your website over HTTPS, using the
+certificates obtained by Certbot. An installer is only required if you want Certbot to install the certificate to your web server.
+
+Some plugins are both authenticators and installers and it is possible to specify a distinct combination_ of authenticator and plugin.
 
 =========== ==== ==== =============================================================== =============================
 Plugin      Auth Inst Notes                                                           Challenge types (and port)
@@ -57,10 +72,11 @@ standalone_ Y    N    | Uses a "standalone" webserver to obtain a certificate.  
                       | domain. Doing domain validation in this way is
                       | the only way to obtain wildcard certificates from Let's
                       | Encrypt.
-manual_     Y    N    | Helps you obtain a certificate by giving you instructions to  http-01_ (80) or
-                      | perform domain validation yourself. Additionally allows you   dns-01_ (53)
-                      | to specify scripts to automate the validation task in a
-                      | customized way.
+manual_     Y    N    | Obtain a certificate by manually following instructions to    http-01_ (80) or
+                      | perform domain validation yourself. Certificates created this dns-01_ (53)
+                      | way do not support autorenewal.
+                      | Autorenewal may be enabled by providing an authentication
+                      | hook script to automate the domain validation steps.
 =========== ==== ==== =============================================================== =============================
 
 .. |dns_plugs| replace:: :ref:`DNS plugins <dns_plugins>`
@@ -75,16 +91,16 @@ with ``--preferred-challenges``.
 There are also many third-party-plugins_ available. Below we describe in more detail
 the circumstances in which each plugin can be used, and how to use it.
 
-.. _challenges: https://tools.ietf.org/html/draft-ietf-acme-acme-03#section-7
-.. _http-01: https://tools.ietf.org/html/draft-ietf-acme-acme-03#section-7.2
-.. _dns-01: https://tools.ietf.org/html/draft-ietf-acme-acme-03#section-7.4
+.. _challenges: https://datatracker.ietf.org/doc/html/rfc8555#section-8
+.. _http-01: https://datatracker.ietf.org/doc/html/rfc8555#section-8.3
+.. _dns-01: https://datatracker.ietf.org/doc/html/rfc8555#section-8.4
 
 Apache
 ------
 
 The Apache plugin currently `supports
-<https://github.com/certbot/certbot/blob/master/certbot-apache/certbot_apache/_internal/entrypoint.py>`_
-modern OSes based on Debian, Fedora, SUSE, Gentoo and Darwin.
+<https://github.com/certbot/certbot/blob/main/certbot-apache/certbot_apache/_internal/entrypoint.py>`_
+modern OSes based on Debian, Fedora, SUSE, Gentoo, CentOS and Darwin.
 This automates both obtaining *and* installing certificates on an Apache
 webserver. To specify this plugin on the command line, simply include
 ``--apache``.
@@ -130,6 +146,10 @@ files from hidden directories. If ``/.well-known`` is treated specially by
 your webserver configuration, you might need to modify the configuration
 to ensure that files inside ``/.well-known/acme-challenge`` are served by
 the webserver.
+
+Under Windows, Certbot will generate a ``web.config`` file, if one does not already exist,
+in ``/.well-known/acme-challenge`` in order to let IIS serve the challenge files even if they
+do not have an extension.
 
 Nginx
 -----
@@ -179,18 +199,17 @@ If you'd like to obtain a wildcard certificate from Let's Encrypt or run
 Certbot's DNS plugins.
 
 These plugins are not included in a default Certbot installation and must be
-installed separately. While the DNS plugins cannot currently be used with
-``certbot-auto``, they are available in many OS package managers and as Docker
-images. Visit https://certbot.eff.org to learn the best way to use the DNS
-plugins on your system.
+installed separately. They are available in many OS package managers, as Docker
+images, and as snaps. Visit https://certbot.eff.org to learn the best way to
+use the DNS plugins on your system.
 
 Once installed, you can find documentation on how to use each plugin at:
 
 * `certbot-dns-cloudflare <https://certbot-dns-cloudflare.readthedocs.io>`_
-* `certbot-dns-cloudxns <https://certbot-dns-cloudxns.readthedocs.io>`_
 * `certbot-dns-digitalocean <https://certbot-dns-digitalocean.readthedocs.io>`_
 * `certbot-dns-dnsimple <https://certbot-dns-dnsimple.readthedocs.io>`_
 * `certbot-dns-dnsmadeeasy <https://certbot-dns-dnsmadeeasy.readthedocs.io>`_
+* `certbot-dns-gehirn <https://certbot-dns-gehirn.readthedocs.io>`_
 * `certbot-dns-google <https://certbot-dns-google.readthedocs.io>`_
 * `certbot-dns-linode <https://certbot-dns-linode.readthedocs.io>`_
 * `certbot-dns-luadns <https://certbot-dns-luadns.readthedocs.io>`_
@@ -198,6 +217,7 @@ Once installed, you can find documentation on how to use each plugin at:
 * `certbot-dns-ovh <https://certbot-dns-ovh.readthedocs.io>`_
 * `certbot-dns-rfc2136 <https://certbot-dns-rfc2136.readthedocs.io>`_
 * `certbot-dns-route53 <https://certbot-dns-route53.readthedocs.io>`_
+* `certbot-dns-sakuracloud <https://certbot-dns-sakuracloud.readthedocs.io>`_
 
 Manual
 ------
@@ -228,11 +248,21 @@ For example, for the domain ``example.com``, a zone file entry would look like:
 
         _acme-challenge.example.com. 300 IN TXT "gfj9Xq...Rg85nM"
 
+.. _manual-renewal:
 
-Additionally you can specify scripts to prepare for validation and
-perform the authentication procedure and/or clean up after it by using
-the ``--manual-auth-hook`` and ``--manual-cleanup-hook`` flags. This is
-described in more depth in the hooks_ section.
+**Renewal with the manual plugin**
+
+Certificates created using ``--manual`` **do not** support automatic renewal unless
+combined with an `authentication hook script <#hooks>`_  via ``--manual-auth-hook``
+to automatically set up the required HTTP and/or TXT challenges.
+
+If you can use one of the other plugins_ which support autorenewal to create
+your certificate, doing so is highly recommended.
+
+To manually renew a certificate using ``--manual`` without hooks, repeat the same
+``certbot --manual`` command you used to create the certificate originally. As this
+will require you to copy and paste new HTTP files or DNS TXT records, the command
+cannot be automated with a cron job.
 
 .. _combination:
 
@@ -281,18 +311,52 @@ proxmox_           N    Y    Install certificates in Proxmox Virtualization serv
 dns-standalone_    Y    N    Obtain certificates via an integrated DNS server
 dns-ispconfig_     Y    N    DNS Authentication using ISPConfig as DNS server
 dns-clouddns_      Y    N    DNS Authentication using CloudDNS API
+dns-lightsail_     Y    N    DNS Authentication using Amazon Lightsail DNS API
+dns-inwx_          Y    Y    DNS Authentication for INWX through the XML API
+dns-azure_         Y    N    DNS Authentication using Azure DNS
+dns-godaddy_       Y    N    DNS Authentication using Godaddy DNS
+dns-yandexcloud_   Y    N    DNS Authentication using Yandex Cloud DNS
+dns-bunny_         Y    N    DNS Authentication using BunnyDNS
+njalla_            Y    N    DNS Authentication for njalla
+DuckDNS_           Y    N    DNS Authentication for DuckDNS
+Porkbun_           Y    N    DNS Authentication for Porkbun
+Infomaniak_        Y    N    DNS Authentication using Infomaniak Domains API
+dns-multi_         Y    N    DNS authentication of 100+ providers using go-acme/lego
+dns-dnsmanager_    Y    N    DNS Authentication for dnsmanager.io
+standalone-nfq_    Y    N    HTTP Authentication that works with any webserver (Linux only)
+dns-solidserver_   Y    N    DNS Authentication using SOLIDserver (EfficientIP)
+dns-stackit_       Y    N    DNS Authentication using STACKIT DNS
+dns-ionos_         Y    N    DNS Authentication using IONOS Cloud DNS
+dns-mijn-host_     Y    N    DNS Authentication using mijn.host DNS
 ================== ==== ==== ===============================================================
 
 .. _haproxy: https://github.com/greenhost/certbot-haproxy
 .. _s3front: https://github.com/dlapiduz/letsencrypt-s3front
 .. _gandi: https://github.com/obynio/certbot-plugin-gandi
-.. _varnish: http://git.sesse.net/?p=letsencrypt-varnish-plugin
+.. _varnish: https://git.sesse.net/?p=letsencrypt-varnish-plugin
 .. _pritunl: https://github.com/kharkevich/letsencrypt-pritunl
 .. _proxmox: https://github.com/kharkevich/letsencrypt-proxmox
 .. _external-auth: https://github.com/EnigmaBridge/certbot-external-auth
 .. _dns-standalone: https://github.com/siilike/certbot-dns-standalone
 .. _dns-ispconfig: https://github.com/m42e/certbot-dns-ispconfig
 .. _dns-clouddns: https://github.com/vshosting/certbot-dns-clouddns
+.. _dns-lightsail: https://github.com/noi/certbot-dns-lightsail
+.. _dns-inwx: https://github.com/oGGy990/certbot-dns-inwx/
+.. _dns-azure: https://github.com/binkhq/certbot-dns-azure
+.. _dns-godaddy: https://github.com/miigotu/certbot-dns-godaddy
+.. _dns-yandexcloud: https://github.com/PykupeJIbc/certbot-dns-yandexcloud
+.. _dns-bunny: https://github.com/mwt/certbot-dns-bunny
+.. _njalla: https://github.com/chaptergy/certbot-dns-njalla
+.. _DuckDNS: https://github.com/infinityofspace/certbot_dns_duckdns
+.. _Porkbun: https://github.com/infinityofspace/certbot_dns_porkbun
+.. _Infomaniak: https://github.com/Infomaniak/certbot-dns-infomaniak
+.. _dns-multi: https://github.com/alexzorin/certbot-dns-multi
+.. _dns-dnsmanager: https://github.com/stayallive/certbot-dns-dnsmanager
+.. _standalone-nfq: https://github.com/alexzorin/certbot-standalone-nfq
+.. _dns-solidserver: https://gitlab.com/charlyhong/certbot-dns-solidserver
+.. _dns-stackit: https://github.com/stackitcloud/certbot-dns-stackit
+.. _dns-ionos: https://github.com/ionos-cloud/certbot-dns-ionos-cloud
+.. _dns-mijn-host: https://github.com/mijnhost/certbot-dns-mijn-host
 
 If you're interested, you can also :ref:`write your own plugin <dev-plugin>`.
 
@@ -308,16 +372,19 @@ the ``certificates`` subcommand:
 
 This returns information in the following format::
 
-  Found the following certs:
+  Found the following certificates:
     Certificate Name: example.com
       Domains: example.com, www.example.com
       Expiry Date: 2017-02-19 19:53:00+00:00 (VALID: 30 days)
       Certificate Path: /etc/letsencrypt/live/example.com/fullchain.pem
+      Key Type: RSA
       Private Key Path: /etc/letsencrypt/live/example.com/privkey.pem
 
 ``Certificate Name`` shows the name of the certificate. Pass this name
 using the ``--cert-name`` flag to specify a particular certificate for the ``run``,
-``certonly``, ``certificates``, ``renew``, and ``delete`` commands. Example::
+``certonly``, ``certificates``, ``renew``, and ``delete`` commands. The certificate
+name cannot contain filepath separators (i.e. '/' or '\\', depending on the platform).
+Example::
 
   certbot certonly --cert-name example.com
 
@@ -339,7 +406,6 @@ The ``--force-renewal``, ``--duplicate``, and ``--expand`` options
 control Certbot's behavior when re-creating
 a certificate with the same name as an existing certificate.
 If you don't specify a requested behavior, Certbot may ask you what you intended.
-
 
 ``--force-renewal`` tells Certbot to request a new certificate
 with the same domains as an existing certificate. Each domain
@@ -374,7 +440,6 @@ If you prefer, you can specify the domains individually like this:
 Consider using ``--cert-name`` instead of ``--expand``, as it gives more control
 over which certificate is modified and it lets you remove domains as well as adding them.
 
-
 ``--allow-subset-of-names`` tells Certbot to continue with certificate generation if
 only some of the specified domain authorizations can be obtained. This may
 be useful if some domains specified in a certificate no longer point at this
@@ -390,7 +455,7 @@ abuse of the ACME protocol, as described
 .. _changing:
 
 Changing a Certificate's Domains
-================================
+--------------------------------
 
 The ``--cert-name`` flag can also be used to modify the domains a certificate contains,
 by specifying new domains using the ``-d`` or ``--domains`` flag. If certificate ``example.com``
@@ -404,33 +469,155 @@ replace that set entirely::
 
   certbot certonly --cert-name example.com -d example.org,www.example.org
 
+.. _using-ecdsa-keys:
+
+RSA and ECDSA keys
+------------------------
+
+Certbot supports two certificate private key algorithms: ``rsa`` and ``ecdsa``.
+
+As of version 2.0.0, Certbot defaults to ECDSA ``secp256r1`` (P-256) certificate private keys
+for all new certificates. Existing certificates will continue to renew using their existing key
+type, unless a key type change is requested.
+
+The type of key used by Certbot can be controlled through the ``--key-type`` option.
+You can use the ``--elliptic-curve`` option to control the curve used in ECDSA
+certificates and the ``--rsa-key-size`` option to control the size of RSA keys.
+
+.. warning:: If you obtain certificates using ECDSA keys, you should be careful
+   not to downgrade to a Certbot version earlier than 1.10.0 where ECDSA keys were
+   not supported. Downgrades like this are possible if you switch from something like
+   the snaps or pip to packages provided by your operating system which often lag behind.
+
+Changing a certificate's key type
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Unless you are aware that you need to support very old HTTPS clients that are
+not supported by most sites, you can safely transition your site to use
+ECDSA keys instead of RSA keys.
+
+If you want to change a single certificate to use ECDSA keys, you'll need to
+create or renew a certificate while setting ``--key-type ecdsa`` on the command line:
+
+.. code-block:: shell
+
+  certbot renew --key-type ecdsa --cert-name example.com --force-renewal
+
+If you want to use ECDSA keys for all certificates in the future (including renewals
+of existing certificates), you can add the following line to Certbot's
+:ref:`configuration file <config-file>`:
+
+.. code-block:: ini
+
+  key-type = ecdsa
+
+which will take effect upon the next renewal of each certificate.
 
 Revoking certificates
 ---------------------
 
-If your account key has been compromised or you otherwise need to revoke a certificate,
-use the ``revoke`` command to do so. Note that the ``revoke`` command takes the certificate path
-(ending in ``cert.pem``), not a certificate name or domain. Example::
+If you need to revoke a certificate, use the ``revoke`` subcommand to do so.
 
-  certbot revoke --cert-path /etc/letsencrypt/live/CERTNAME/cert.pem
+A certificate may be revoked by providing its name (see ``certbot certificates``) or by providing
+its path directly::
+
+  certbot revoke --cert-name example.com
+
+  certbot revoke --cert-path /etc/letsencrypt/live/example.com/cert.pem
+
+If the certificate being revoked was obtained via the ``--staging``, ``--test-cert`` or a non-default ``--server`` flag,
+that flag must be passed to the ``revoke`` subcommand.
+
+.. note:: After revocation, Certbot will (by default) ask whether you want to **delete** the certificate.
+          Unless deleted, Certbot will try to renew revoked certificates the next time ``certbot renew`` runs.
 
 You can also specify the reason for revoking your certificate by using the ``reason`` flag.
 Reasons include ``unspecified`` which is the default, as well as ``keycompromise``,
 ``affiliationchanged``, ``superseded``, and ``cessationofoperation``::
 
-  certbot revoke --cert-path /etc/letsencrypt/live/CERTNAME/cert.pem --reason keycompromise
+  certbot revoke --cert-name example.com --reason keycompromise
 
-Additionally, if a certificate
-is a test certificate obtained via the ``--staging`` or ``--test-cert`` flag, that flag must be passed to the
-``revoke`` subcommand.
-Once a certificate is revoked (or for other certificate management tasks), all of a certificate's
-relevant files can be removed from the system with the ``delete`` subcommand::
+Revoking by account key or certificate private key
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default, Certbot will try revoke the certificate using your ACME account key. If the certificate was created from
+the same ACME account, the revocation will be successful.
+
+If you instead have the corresponding private key file to the certificate you wish to revoke, use ``--key-path`` to perform the
+revocation from any ACME account::
+
+  certbot revoke --cert-path /etc/letsencrypt/live/example.com/cert.pem --key-path /etc/letsencrypt/live/example.com/privkey.pem
+
+.. _deleting:
+
+Deleting certificates
+---------------------
+
+If you need to delete a certificate, use the ``delete`` subcommand.
+
+.. note:: Read this and the `Safely deleting certificates`_ sections carefully. This is an irreversible operation and must
+          be done with care.
+
+Certbot does not automatically revoke a certificate before deleting it. If you're no longer using a certificate and don't
+plan to use it anywhere else, you may want to follow the instructions in `Revoking certificates`_ instead. Generally, there's
+no need to revoke a certificate if its private key has not been compromised, but you may still receive expiration emails
+from Let's Encrypt unless you revoke.
+
+.. note:: Do not manually delete certificate files from inside ``/etc/letsencrypt/``. Always use the ``delete`` subcommand.
+
+A certificate may be deleted by providing its name with ``--cert-name``. \
+You may find its name using ``certbot certificates``.
+
+Otherwise, you will be prompted to choose one or more
+certificates to delete::
 
   certbot delete --cert-name example.com
+  # or to choose from a list:
+  certbot delete
 
-.. note:: If you don't use ``delete`` to remove the certificate completely, it will be renewed automatically at the next renewal event.
+Safely deleting certificates
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. note:: Revoking a certificate will have no effect on the rate limit imposed by the Let's Encrypt server.
+Deleting a certificate without following the proper steps can result in a non-functioning server. To safely delete a
+certificate, follow all the steps below to make sure that references to a certificate are removed from the configuration
+of any installed server software (Apache, nginx, Postfix, etc) *before* deleting the certificate.
+
+To explain further, when installing a certificate, Certbot modifies Apache or nginx's configuration to load the certificate
+and its private key from the ``/etc/letsencrypt/live/`` directory. Before deleting a certificate, it is necessary to undo
+that modification, by removing any references to the certificate from the webserver's configuration files.
+
+Follow these steps to safely delete a certificate:
+
+1. Find all references to the certificate (substitute ``example.com`` in the command for the name of the certificate
+   you wish to delete)::
+
+     sudo bash -c 'grep -R live/example.com /etc/{nginx,httpd,apache2}'
+
+   If there are no references found, skip directly to Step 4.
+
+   If some references are found, they will look something like::
+
+     /etc/apache2/sites-available/000-default-le-ssl.conf:SSLCertificateFile /etc/letsencrypt/live/example.com/fullchain.pem
+     /etc/apache2/sites-available/000-default-le-ssl.conf:SSLCertificateKeyFile /etc/letsencrypt/live/example.com/privkey.pem
+
+2. You will need a self-signed certificate to replace the certificate you are deleting. The following command will generate one
+   for you, saving the certificate at ``/etc/letsencrypt/self-signed-cert.pem`` and its private key at
+   ``/etc/letsencrypt/self-signed-privkey.pem``::
+
+     sudo openssl req -nodes -batch -x509 -newkey rsa:2048 -keyout /etc/letsencrypt/self-signed-privkey.pem -out /etc/letsencrypt/self-signed-cert.pem -days 356
+
+3. For each reference found in Step 1, open the file in a text editor and replace the reference to the existing
+   certificate with a reference to the self-signed certificate.
+
+   Continuing from the previous example, you would open ``/etc/apache2/sites-available/000-default-le-ssl.conf`` in a text editor
+   and modify the two matching lines of text to instead say::
+
+     SSLCertificateFile /etc/letsencrypt/self-signed-cert.pem
+     SSLCertificateKeyFile /etc/letsencrypt/self-signed-privkey.pem
+
+4. It is now safe to delete the certificate. Do so by running::
+
+     sudo certbot delete --cert-name example.com
 
 .. _renewal:
 
@@ -441,11 +628,12 @@ Renewing certificates
    days). Make sure you renew the certificates at least once in 3
    months.
 
-.. seealso:: Many of the certbot clients obtained through a
-   distribution come with automatic renewal out of the box,
-   such as Debian and Ubuntu versions installed through `apt`,
-   CentOS/RHEL 7 through EPEL, etc.  See `Automated Renewals`_
-   for more details.
+.. seealso:: Most Certbot installations come with automatic
+   renewal out of the box. See `Automated Renewals`_ for more details.
+
+.. seealso:: Users of the `Manual`_ plugin should note that ``--manual`` certificates
+   will not renew automatically, unless combined with authentication hook scripts.
+   See `Renewal with the manual plugin <#manual-renewal>`_.
 
 As of version 0.10.0, Certbot supports a ``renew`` action to check
 all installed certificates for impending expiry and attempt to renew
@@ -525,6 +713,12 @@ form is not appropriate to run daily because each certificate will be
 renewed every day, which will quickly run into the certificate authority
 rate limit.)
 
+Starting with Certbot 2.7.0, certbot provides the environment variables
+`RENEWED_DOMAINS` and `FAILED_DOMAINS` to all post renewal hooks. These
+variables contain a space separated list of domains. These variables can be used
+to determine if a renewal has succeeded or failed as part of your post renewal
+hook.
+
 Note that options provided to ``certbot renew`` will apply to
 *every* certificate for which renewal is attempted; for example,
 ``certbot renew --rsa-key-size 4096`` would try to replace every
@@ -564,79 +758,128 @@ commands into your individual environment.
   and when renewal is not necessary.
 
 .. _renewal-config-file:
+.. _Modifying the Renewal Configuration File:
 
+Modifying the Renewal Configuration of Existing Certificates
+------------------------------------------------------------
 
-Modifying the Renewal Configuration File
-----------------------------------------
+When creating a certificate, Certbot will keep track of all of the relevant options chosen by the user. At renewal
+time, Certbot will remember these options and apply them once again.
 
-When a certificate is issued, by default Certbot creates a renewal configuration file that
-tracks the options that were selected when Certbot was run. This allows Certbot
-to use those same options again when it comes time for renewal. These renewal
-configuration files are located at ``/etc/letsencrypt/renewal/CERTNAME``.
+Sometimes, you may encounter the need to change some of these options for future certificate renewals. To achieve this,
+you will need to perform the following steps:
 
-For advanced certificate management tasks, it is possible to manually modify the certificate's
-renewal configuration file, but this is discouraged since it can easily break Certbot's
-ability to renew your certificates. If you choose to modify the renewal configuration file
-we advise you to test its validity with the ``certbot renew --dry-run`` command.
+Certbot v2.3.0 and newer
+~~~~~~~~~~~~~~~~~~~~~~~~
+The ``certbot reconfigure`` command can be used to change a certificate's renewal options.
+This command will use the new renewal options to perform a test renewal against the Let's Encrypt staging server.
+If this is successful, the new renewal options will be saved and will apply to future renewals.
 
-.. warning:: Modifying any files in ``/etc/letsencrypt`` can damage them so Certbot can no longer properly manage its certificates, and we do not recommend doing so.
+You will need to specify the ``--cert-name``, which can be found by running ``certbot certificates``.
 
-For most tasks, it is safest to limit yourself to pointing symlinks at the files there, or using
-``--deploy-hook`` to copy / make new files based upon those files, if your operational situation requires it
-(for instance, combining certificates and keys in different way, or having copies of things with different
-specific permissions that are demanded by other programs).
+A list of common options that may be updated with the ``reconfigure`` command can be found by running
+``certbot help reconfigure``.
 
-If the contents of ``/etc/letsencrypt/archive/CERTNAME`` are moved to a new folder, first specify
-the new folder's name in the renewal configuration file, then run ``certbot update_symlinks`` to
-point the symlinks in ``/etc/letsencrypt/live/CERTNAME`` to the new folder.
+As a practical example, if you were using the ``webroot`` authenticator and had relocated your website to another directory,
+you can change the ``--webroot-path`` to the new directory using the following command:
 
-If you would like the live certificate files whose symlink location Certbot updates on each run to
-reside in a different location, first move them to that location, then specify the full path of
-each of the four files in the renewal configuration file. Since the symlinks are relative links,
-you must follow this with an invocation of ``certbot update_symlinks``.
+.. code-block:: shell
 
-For example, say that a certificate's renewal configuration file previously contained the following
-directives::
+  certbot reconfigure --cert-name example.com --webroot-path /path/to/new/location
 
-  archive_dir = /etc/letsencrypt/archive/example.com
-  cert = /etc/letsencrypt/live/example.com/cert.pem
-  privkey = /etc/letsencrypt/live/example.com/privkey.pem
-  chain = /etc/letsencrypt/live/example.com/chain.pem
-  fullchain = /etc/letsencrypt/live/example.com/fullchain.pem
+Certbot v2.2.0 and older
+~~~~~~~~~~~~~~~~~~~~~~~~
+1. Perform a *dry run renewal* with the amended options on the command line. This allows you to confirm that the change
+   is valid and will result in successful future renewals.
+2. If the dry run is successful, perform a *live renewal* of the certificate. This will persist the change for future
+   renewals. If the certificate is not yet due to expire, you will need to force a renewal using ``--force-renewal``.
 
-The following commands could be used to specify where these files are located::
+.. note:: Rate limits from the certificate authority may prevent you from performing multiple renewals in a short
+   period of time. It is strongly recommended to perform the second step only once, when you have decided on what
+   options should change.
 
-  mv /etc/letsencrypt/archive/example.com /home/user/me/certbot/example_archive
-  sed -i 's,/etc/letsencrypt/archive/example.com,/home/user/me/certbot/example_archive,' /etc/letsencrypt/renewal/example.com.conf
-  mv /etc/letsencrypt/live/example.com/*.pem /home/user/me/certbot/
-  sed -i 's,/etc/letsencrypt/live/example.com,/home/user/me/certbot,g' /etc/letsencrypt/renewal/example.com.conf
-  certbot update_symlinks
+As a practical example, if you were using the ``webroot`` authenticator and had relocated your website to another directory,
+you would need to change the ``--webroot-path`` to the new directory. Following the above advice:
+
+1. Perform a *dry-run renewal* of the individual certificate with the amended options::
+
+     certbot renew --cert-name example.com --webroot-path /path/to/new/location --dry-run
+
+2. If the dry-run was successful, make the change permanent by performing a *live renewal* of the certificate with the
+   amended options, including ``--force-renewal``::
+
+     certbot renew --cert-name example.com --webroot-path /path/to/new/location --force-renewal
+
+   ``--cert-name`` selects the particular certificate to be modified. Without this option, all certificates will be selected.
+
+   ``--webroot-path`` is the option intended to be changed. All other previously selected options will be kept the same
+   and do not need to be included in the command.
+
+For advanced certificate management tasks, it is also possible to manually modify the certificate's renewal configuration
+file, but this is discouraged since it can easily break Certbot's ability to renew your certificates. These renewal
+configuration files are located at ``/etc/letsencrypt/renewal/CERTNAME.conf``. If you choose to modify the renewal
+configuration file we advise you to make a backup of the file beforehand and test its validity with the ``certbot renew --dry-run`` command.
+
+.. warning:: Manually modifying files under ``/etc/letsencrypt/renewal/`` can damage them if done improperly and we do not recommend doing so.
+
 
 Automated Renewals
 ------------------
 
-Many Linux distributions provide automated renewal when you use the
-packages installed through their system package manager.  The
-following table is an *incomplete* list of distributions which do so,
-as well as their methods for doing so.
+Most Certbot installations come with automatic renewals preconfigured. This
+is done by means of a scheduled task which runs ``certbot renew`` periodically.
 
-If you are not sure whether or not your system has this already
-automated, refer to your distribution's documentation, or check your
-system's crontab (typically in `/etc/crontab/` and `/etc/cron.*/*` and
-systemd timers (`systemctl list-timers`).
+If you are unsure whether you need to configure automated renewal:
 
-.. csv-table:: Distributions with Automated Renewal
-   :header: "Distribution Name", "Distribution Version", "Automation Method"
+1. Review the instructions for your system and installation method at
+   https://certbot.eff.org/instructions. They will describe how to set up a scheduled task,
+   if necessary. If no step is listed, your system comes with automated renewal pre-installed,
+   and you should not need to take any additional actions.
+2. On Linux and BSD, you can check to see if your installation method has pre-installed a timer
+   for you. To do so, look for the ``certbot renew`` command in either your system's crontab
+   (typically `/etc/crontab` or `/etc/cron.*/*`) or systemd timers (``systemctl list-timers``).
+3. If you're still not sure, you can configure automated renewal manually by following the steps
+   in the next section. Certbot has been carefully engineered to handle the case where both manual
+   automated renewal and pre-installed automated renewal are set up.
 
-   "CentOS", "EPEL 7", "systemd"
-   "Debian", "jessie", "cron, systemd"
-   "Debian", "stretch", "cron, systemd"
-   "Debian", "testing/sid", "cron, systemd"
-   "Fedora", "26", "systemd"
-   "Fedora", "27", "systemd"
-   "RHEL", "EPEL 7", "systemd"
-   "Ubuntu", "17.10", "cron, systemd"
-   "Ubuntu", "certbot PPA", "cron, systemd"
+Setting up automated renewal
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If you think you may need to set up automated renewal, follow these instructions to set up a
+scheduled task to automatically renew your certificates in the background. If you are unsure
+whether your system has a pre-installed scheduled task for Certbot, it is safe to follow these
+instructions to create one.
+
+.. note::
+   If you're using Windows, these instructions are not neccessary as Certbot on Windows comes with
+   a scheduled task for automated renewal pre-installed.
+
+   If you are using macOS and installed Certbot using Homebrew, follow the instructions at
+   https://certbot.eff.org/instructions to set up automated renewal. The instructions below
+   are not applicable on macOS.
+
+Run the following line, which will add a cron job to `/etc/crontab`:
+
+.. code-block:: shell
+
+  SLEEPTIME=$(awk 'BEGIN{srand(); print int(rand()*(3600+1))}'); echo "0 0,12 * * * root sleep $SLEEPTIME && certbot renew -q" | sudo tee -a /etc/crontab > /dev/null
+
+If you needed to stop your webserver to run Certbot, you'll want to
+add ``pre`` and ``post`` hooks to stop and start your webserver automatically.
+For example, if your webserver is HAProxy, run the following commands to create the hook files
+in the appropriate directory:
+
+.. code-block:: shell
+
+  sudo sh -c 'printf "#!/bin/sh\nservice haproxy stop\n" > /etc/letsencrypt/renewal-hooks/pre/haproxy.sh'
+  sudo sh -c 'printf "#!/bin/sh\nservice haproxy start\n" > /etc/letsencrypt/renewal-hooks/post/haproxy.sh'
+  sudo chmod 755 /etc/letsencrypt/renewal-hooks/pre/haproxy.sh
+  sudo chmod 755 /etc/letsencrypt/renewal-hooks/post/haproxy.sh
+
+Congratulations, Certbot will now automatically renew your certificates in the background.
+
+If you are interested in learning more about how Certbot renews your certificates, see the
+`Renewing certificates`_ section above.
 
 .. _where-certs:
 
@@ -644,12 +887,24 @@ Where are my certificates?
 ==========================
 
 All generated keys and issued certificates can be found in
-``/etc/letsencrypt/live/$domain``. In the case of creating a SAN certificate
-with multiple alternative names, ``$domain`` is the first domain passed in
-via -d parameter. Rather than copying, please point
-your (web) server configuration directly to those files (or create
-symlinks). During the renewal_, ``/etc/letsencrypt/live`` is updated
-with the latest necessary files.
+``/etc/letsencrypt/live/$domain``, where ``$domain`` is the certificate
+name (see the note below). Rather than copying, please point your (web)
+server configuration directly to those files (or create symlinks).
+During the renewal_, ``/etc/letsencrypt/live`` is updated with the latest
+necessary files.
+
+.. note::
+  The certificate name ``$domain`` used in the path ``/etc/letsencrypt/live/$domain``
+  follows this convention:
+
+  * it is the name given to ``--cert-name``,
+  * if ``--cert-name`` is not set by the user it is the first domain given to
+    ``--domains``,
+  * if the first domain is a wildcard domain (eg. ``*.example.com``) the
+    certificate name will be ``example.com``,
+  * if a name collision would occur with a certificate already named ``example.com``,
+    the new certificate name will be constructed using a numerical sequence
+    as ``example.com-001``.
 
 For historical reasons, the containing directories are created with
 permissions of ``0700`` meaning that certificates are accessible only
@@ -661,10 +916,6 @@ For servers that drop root privileges before attempting to read the
 private key file, you will also need to use ``chgrp`` and ``chmod
 0640`` to allow the server to read
 ``/etc/letsencrypt/live/$domain/privkey.pem``.
-
-.. note:: ``/etc/letsencrypt/archive`` and ``/etc/letsencrypt/keys``
-   contain all previous keys and certificates, while
-   ``/etc/letsencrypt/live`` symlinks to the latest versions.
 
 The following files are available:
 
@@ -683,7 +934,7 @@ The following files are available:
   This is what Apache needs for `SSLCertificateKeyFile
   <https://httpd.apache.org/docs/2.4/mod/mod_ssl.html#sslcertificatekeyfile>`_,
   and Nginx for `ssl_certificate_key
-  <http://nginx.org/en/docs/http/ngx_http_ssl_module.html#ssl_certificate_key>`_.
+  <https://nginx.org/en/docs/http/ngx_http_ssl_module.html#ssl_certificate_key>`_.
 
 ``fullchain.pem``
   All certificates, **including** server certificate (aka leaf certificate or
@@ -693,7 +944,7 @@ The following files are available:
   This is what Apache >= 2.4.8 needs for `SSLCertificateFile
   <https://httpd.apache.org/docs/2.4/mod/mod_ssl.html#sslcertificatefile>`_,
   and what Nginx needs for `ssl_certificate
-  <http://nginx.org/en/docs/http/ngx_http_ssl_module.html#ssl_certificate>`_.
+  <https://nginx.org/en/docs/http/ngx_http_ssl_module.html#ssl_certificate>`_.
 
 ``cert.pem`` and ``chain.pem`` (less common)
   ``cert.pem`` contains the server certificate by itself, and
@@ -712,7 +963,7 @@ The following files are available:
 
   If you're using OCSP stapling with Nginx >= 1.3.7, ``chain.pem`` should be
   provided as the `ssl_trusted_certificate
-  <http://nginx.org/en/docs/http/ngx_http_ssl_module.html#ssl_trusted_certificate>`_
+  <https://nginx.org/en/docs/http/ngx_http_ssl_module.html#ssl_trusted_certificate>`_
   to validate OCSP responses.
 
 .. note:: All files are PEM-encoded.
@@ -847,20 +1098,26 @@ Changing the ACME Server
 ========================
 
 By default, Certbot uses Let's Encrypt's production server at
-https://acme-v02.api.letsencrypt.org/. You can tell Certbot to use a
+https://acme-v02.api.letsencrypt.org/directory. You can tell Certbot to use a
 different CA by providing ``--server`` on the command line or in a
 :ref:`configuration file <config-file>` with the URL of the server's
 ACME directory. For example, if you would like to use Let's Encrypt's
 staging server, you would add ``--server
 https://acme-staging-v02.api.letsencrypt.org/directory`` to the command line.
 
-If you use ``--server`` to specify an ACME CA that implements the standardized
-version of the spec, you may be able to obtain a certificate for a
-wildcard domain. Some CAs (such as Let's Encrypt) require that domain
-validation for wildcard domains must be done through modifications to
-DNS records which means that the dns-01_ challenge type must be used. To
-see a list of Certbot plugins that support this challenge type and how
-to use them, see plugins_.
+.. note:: ``--dry-run`` uses the Let's Encrypt staging server, unless ``--server``
+   is specified on the CLI or in the :ref:`cli.ini configuration file <config-file>`.
+   Take caution when using ``--dry-run`` with a custom server, as it may cause real
+   certificates to be issued and discarded.
+
+If Certbot does not trust the SSL certificate used by the ACME server, you
+can use the `REQUESTS_CA_BUNDLE
+<https://requests.readthedocs.io/en/latest/user/advanced/#ssl-cert-verification>`_
+environment variable to override the root certificates trusted by Certbot. Certbot
+uses the ``requests`` library, which does not use the operating system trusted root store.
+Make sure that ``REQUESTS_CA_BUNDLE`` is set globally in the environment and not only on
+the CLI, or scheduled renewal will not succeed.
+
 
 Lock Files
 ==========
@@ -927,7 +1184,8 @@ certbot will begin rotating logs once there are 1000 logs in the log directory.
 Meaning that once 1000 files are in ``/var/log/letsencrypt`` Certbot will delete
 the oldest one to make room for new logs. The number of subsequent logs can be
 changed by passing the desired number to the command line flag
-``--max-log-backups``.
+``--max-log-backups``. Setting this flag to 0 disables log rotation entirely,
+causing certbot to always append to the same log file.
 
 .. note:: Some distributions, including Debian and Ubuntu, disable
    certbot's internal log rotation in favor of a more traditional

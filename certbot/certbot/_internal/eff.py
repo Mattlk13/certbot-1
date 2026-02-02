@@ -1,22 +1,19 @@
 """Subscribes users to the EFF newsletter."""
 import logging
+from typing import Optional
 
 import requests
-import zope.component
 
-from acme.magic_typing import Optional  # pylint: disable=unused-import
-
-from certbot import interfaces
+from certbot import configuration
 from certbot._internal import constants
-from certbot._internal.account import Account  # pylint: disable=unused-import
+from certbot._internal.account import Account
 from certbot._internal.account import AccountFileStorage
-from certbot.interfaces import IConfig  # pylint: disable=unused-import
+from certbot.display import util as display_util
 
 logger = logging.getLogger(__name__)
 
 
-def prepare_subscription(config, acc):
-    # type: (IConfig, Account) -> None
+def prepare_subscription(config: configuration.NamespaceConfig, acc: Account) -> None:
     """High level function to store potential EFF newsletter subscriptions.
 
     The user may be asked if they want to sign up for the newsletter if
@@ -25,7 +22,7 @@ def prepare_subscription(config, acc):
 
     Decision about EFF subscription will be stored in the account metadata.
 
-    :param IConfig config: Client configuration.
+    :param configuration.NamespaceConfig config: Client configuration.
     :param Account acc: Current client account.
 
     """
@@ -44,17 +41,16 @@ def prepare_subscription(config, acc):
         storage.update_meta(acc)
 
 
-def handle_subscription(config, acc):
-    # type: (IConfig, Account) -> None
+def handle_subscription(config: configuration.NamespaceConfig, acc: Optional[Account]) -> None:
     """High level function to take care of EFF newsletter subscriptions.
 
     Once subscription is handled, it will not be handled again.
 
-    :param IConfig config: Client configuration.
+    :param configuration.NamespaceConfig config: Client configuration.
     :param Account acc: Current client account.
 
     """
-    if config.dry_run:
+    if config.dry_run or not acc:
         return
     if acc.meta.register_to_eff:
         subscribe(acc.meta.register_to_eff)
@@ -64,8 +60,7 @@ def handle_subscription(config, acc):
         storage.update_meta(acc)
 
 
-def _want_subscription():
-    # type: () -> bool
+def _want_subscription() -> bool:
     """Does the user want to be subscribed to the EFF newsletter?
 
     :returns: True if we should subscribe the user, otherwise, False
@@ -78,12 +73,10 @@ def _want_subscription():
         "founding partner of the Let's Encrypt project and the non-profit organization "
         "that develops Certbot? We'd like to send you email about our work encrypting "
         "the web, EFF news, campaigns, and ways to support digital freedom. ")
-    display = zope.component.getUtility(interfaces.IDisplay)
-    return display.yesno(prompt, default=False)
+    return display_util.yesno(prompt, default=False)
 
 
-def subscribe(email):
-    # type: (str) -> None
+def subscribe(email: str) -> None:
     """Subscribe the user to the EFF mailing list.
 
     :param str email: the e-mail address to subscribe
@@ -95,11 +88,10 @@ def subscribe(email):
             'form_id': 'eff_supporters_library_subscribe_form'}
     logger.info('Subscribe to the EFF mailing list (email: %s).', email)
     logger.debug('Sending POST request to %s:\n%s', url, data)
-    _check_response(requests.post(url, data=data))
+    _check_response(requests.post(url, data=data, timeout=60))
 
 
-def _check_response(response):
-    # type: (requests.Response) -> None
+def _check_response(response: requests.Response) -> None:
     """Check for errors in the server's response.
 
     If an error occurred, it will be reported to the user.
@@ -119,8 +111,7 @@ def _check_response(response):
         _report_failure('there was a problem with the server response')
 
 
-def _report_failure(reason=None):
-    # type: (Optional[str]) -> None
+def _report_failure(reason: Optional[str] = None) -> None:
     """Notify the user of failing to sign them up for the newsletter.
 
     :param reason: a phrase describing what the problem was
@@ -133,5 +124,4 @@ def _report_failure(reason=None):
         msg.append(' because ')
         msg.append(reason)
     msg.append('. You can try again later by visiting https://act.eff.org.')
-    reporter = zope.component.getUtility(interfaces.IReporter)
-    reporter.add_message(''.join(msg), reporter.LOW_PRIORITY)
+    display_util.notify(''.join(msg))

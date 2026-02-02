@@ -3,45 +3,36 @@ from datetime import datetime
 from datetime import timedelta
 import logging
 import re
+import subprocess
 from subprocess import PIPE
-from subprocess import Popen
+from typing import Optional
+from typing import Tuple
 
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.backends import default_backend
-# See https://github.com/pyca/cryptography/issues/4275
-from cryptography.hazmat.primitives import hashes  # type: ignore
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives import serialization
+from cryptography.x509 import ocsp
 import pytz
 import requests
 
-from acme.magic_typing import Optional
-from acme.magic_typing import Tuple
 from certbot import crypto_util
 from certbot import errors
 from certbot import util
 from certbot.compat.os import getenv
-from certbot.interfaces import RenewableCert  # pylint: disable=unused-import
-
-try:
-    # Only cryptography>=2.5 has ocsp module
-    # and signature_hash_algorithm attribute in OCSPResponse class
-    from cryptography.x509 import ocsp  # pylint: disable=ungrouped-imports
-    getattr(ocsp.OCSPResponse, 'signature_hash_algorithm')
-except (ImportError, AttributeError):  # pragma: no cover
-    ocsp = None  # type: ignore
-
+from certbot.interfaces import RenewableCert
 
 logger = logging.getLogger(__name__)
 
 
-class RevocationChecker(object):
+class RevocationChecker:
     """This class figures out OCSP checking on this system, and performs it."""
 
-    def __init__(self, enforce_openssl_binary_usage=False):
+    def __init__(self, enforce_openssl_binary_usage: bool = False) -> None:
         self.broken = False
-        self.use_openssl_binary = enforce_openssl_binary_usage or not ocsp
+        self.use_openssl_binary = enforce_openssl_binary_usage
 
         if self.use_openssl_binary:
             if not util.exe_exists("openssl"):
@@ -50,16 +41,15 @@ class RevocationChecker(object):
                 return
 
             # New versions of openssl want -header var=val, old ones want -header var val
-            test_host_format = Popen(["openssl", "ocsp", "-header", "var", "val"],
-                                     stdout=PIPE, stderr=PIPE, universal_newlines=True)
-            _out, err = test_host_format.communicate()
-            if "Missing =" in err:
+            test_host_format = subprocess.run(["openssl", "ocsp", "-header", "var", "val"],
+                                     stdout=PIPE, stderr=PIPE, universal_newlines=True,
+                                     check=False, env=util.env_no_snap_for_external_calls())
+            if "Missing =" in test_host_format.stderr:
                 self.host_args = lambda host: ["Host=" + host]
             else:
                 self.host_args = lambda host: ["Host", host]
 
-    def ocsp_revoked(self, cert):
-        # type: (RenewableCert) -> bool
+    def ocsp_revoked(self, cert: RenewableCert) -> bool:
         """Get revoked status for a particular cert version.
 
         .. todo:: Make this a non-blocking call
@@ -71,8 +61,7 @@ class RevocationChecker(object):
         """
         return self.ocsp_revoked_by_paths(cert.cert_path, cert.chain_path)
 
-    def ocsp_revoked_by_paths(self, cert_path, chain_path, timeout=10):
-        # type: (str, str, int) -> bool
+    def ocsp_revoked_by_paths(self, cert_path: str, chain_path: str, timeout: int = 10) -> bool:
         """Performs the OCSP revocation check
 
         :param str cert_path: Certificate filepath
@@ -89,7 +78,7 @@ class RevocationChecker(object):
         # Let's Encrypt doesn't update OCSP for expired certificates,
         # so don't check OCSP if the cert is expired.
         # https://github.com/certbot/certbot/issues/7152
-        now = pytz.UTC.fromutc(datetime.utcnow())
+        now = datetime.now(pytz.UTC)
         if crypto_util.notAfter(cert_path) <= now:
             return False
 
@@ -101,8 +90,8 @@ class RevocationChecker(object):
             return self._check_ocsp_openssl_bin(cert_path, chain_path, host, url, timeout)
         return _check_ocsp_cryptography(cert_path, chain_path, url, timeout)
 
-    def _check_ocsp_openssl_bin(self, cert_path, chain_path, host, url, timeout):
-        # type: (str, str, str, str, int) -> bool
+    def _check_ocsp_openssl_bin(self, cert_path: str, chain_path: str,
+                                host: str, url: str, timeout: int) -> bool:
         # Minimal implementation of proxy selection logic as seen in, e.g., cURL
         # Some things that won't work, but may well be in use somewhere:
         # - username and password for proxy authentication
@@ -139,8 +128,7 @@ class RevocationChecker(object):
         return _translate_ocsp_query(cert_path, output, err)
 
 
-def _determine_ocsp_server(cert_path):
-    # type: (str) -> Tuple[Optional[str], Optional[str]]
+def _determine_ocsp_server(cert_path: str) -> Tuple[Optional[str], Optional[str]]:
     """Extract the OCSP server host from a certificate.
 
     :param str cert_path: Path to the cert we're checking OCSP for
@@ -166,12 +154,11 @@ def _determine_ocsp_server(cert_path):
 
     if host:
         return url, host
-    logger.info("Cannot process OCSP host from URL (%s) in cert at %s", url, cert_path)
+    logger.info("Cannot process OCSP host from URL (%s) in certificate at %s", url, cert_path)
     return None, None
 
 
-def _check_ocsp_cryptography(cert_path, chain_path, url, timeout):
-    # type: (str, str, str, int) -> bool
+def _check_ocsp_cryptography(cert_path: str, chain_path: str, url: str, timeout: int) -> bool:
     # Retrieve OCSP response
     with open(chain_path, 'rb') as file_handler:
         issuer = x509.load_pem_x509_certificate(file_handler.read(), default_backend())
@@ -196,7 +183,7 @@ def _check_ocsp_cryptography(cert_path, chain_path, url, timeout):
 
     # Check OCSP response validity
     if response_ocsp.response_status != ocsp.OCSPResponseStatus.SUCCESSFUL:
-        logger.error("Invalid OCSP response status for %s: %s",
+        logger.warning("Invalid OCSP response status for %s: %s",
                      cert_path, response_ocsp.response_status)
         return False
 
@@ -204,13 +191,13 @@ def _check_ocsp_cryptography(cert_path, chain_path, url, timeout):
     try:
         _check_ocsp_response(response_ocsp, request, issuer, cert_path)
     except UnsupportedAlgorithm as e:
-        logger.error(str(e))
+        logger.warning(str(e))
     except errors.Error as e:
-        logger.error(str(e))
+        logger.warning(str(e))
     except InvalidSignature:
-        logger.error('Invalid signature on OCSP response for %s', cert_path)
+        logger.warning('Invalid signature on OCSP response for %s', cert_path)
     except AssertionError as error:
-        logger.error('Invalid OCSP response for %s: %s.', cert_path, str(error))
+        logger.warning('Invalid OCSP response for %s: %s.', cert_path, str(error))
     else:
         # Check OCSP certificate status
         logger.debug("OCSP certificate status for %s is: %s",
@@ -220,8 +207,9 @@ def _check_ocsp_cryptography(cert_path, chain_path, url, timeout):
     return False
 
 
-def _check_ocsp_response(response_ocsp, request_ocsp, issuer_cert, cert_path):
-    """Verify that the OCSP is valid for serveral criteria"""
+def _check_ocsp_response(response_ocsp: 'ocsp.OCSPResponse', request_ocsp: 'ocsp.OCSPRequest',
+                         issuer_cert: x509.Certificate, cert_path: str) -> None:
+    """Verify that the OCSP is valid for several criteria"""
     # Assert OCSP response corresponds to the certificate we are talking about
     if response_ocsp.serial_number != request_ocsp.serial_number:
         raise AssertionError('the certificate in response does not correspond '
@@ -245,7 +233,8 @@ def _check_ocsp_response(response_ocsp, request_ocsp, issuer_cert, cert_path):
     #      for OpenSSL, so we do not do it here.
     # See OpenSSL implementation as a reference:
     # https://github.com/openssl/openssl/blob/ef45aa14c5af024fcb8bef1c9007f3d1c115bd85/crypto/ocsp/ocsp_cl.c#L338-L391
-    now = datetime.utcnow()  # thisUpdate/nextUpdate are expressed in UTC/GMT time zone
+    # thisUpdate/nextUpdate are expressed in UTC/GMT time zone
+    now = datetime.now(pytz.UTC).replace(tzinfo=None)
     if not response_ocsp.this_update:
         raise AssertionError('param thisUpdate is not set.')
     if response_ocsp.this_update > now + timedelta(minutes=5):
@@ -254,13 +243,14 @@ def _check_ocsp_response(response_ocsp, request_ocsp, issuer_cert, cert_path):
         raise AssertionError('param nextUpdate is in the past.')
 
 
-def _check_ocsp_response_signature(response_ocsp, issuer_cert, cert_path):
+def _check_ocsp_response_signature(response_ocsp: 'ocsp.OCSPResponse',
+                                   issuer_cert: x509.Certificate, cert_path: str) -> None:
     """Verify an OCSP response signature against certificate issuer or responder"""
-    def _key_hash(cert):
+    def _key_hash(cert: x509.Certificate) -> bytes:
         return x509.SubjectKeyIdentifier.from_public_key(cert.public_key()).digest
 
-    if response_ocsp.responder_name == issuer_cert.subject or \
-       response_ocsp.responder_key_hash == _key_hash(issuer_cert):
+    if (response_ocsp.responder_name == issuer_cert.subject
+            or response_ocsp.responder_key_hash == _key_hash(issuer_cert)):
         # Case where the OCSP responder is also the certificate issuer
         logger.debug('OCSP response for certificate %s is signed by the certificate\'s issuer.',
                      cert_path)
@@ -294,21 +284,24 @@ def _check_ocsp_response_signature(response_ocsp, issuer_cert, cert_path):
             raise AssertionError('responder is not authorized by issuer to sign OCSP responses')
 
         # Following line may raise UnsupportedAlgorithm
-        chosen_hash = responder_cert.signature_hash_algorithm
+        chosen_cert_hash = responder_cert.signature_hash_algorithm
+        assert chosen_cert_hash # always present for RSA and ECDSA certificates.
         # For a delegate OCSP responder, we need first check that its certificate is effectively
         # signed by the certificate issuer.
         crypto_util.verify_signed_payload(issuer_cert.public_key(), responder_cert.signature,
-                                          responder_cert.tbs_certificate_bytes, chosen_hash)
+                                          responder_cert.tbs_certificate_bytes, chosen_cert_hash)
 
     # Following line may raise UnsupportedAlgorithm
-    chosen_hash = response_ocsp.signature_hash_algorithm
+    chosen_response_hash = response_ocsp.signature_hash_algorithm
     # We check that the OSCP response is effectively signed by the responder
     # (an authorized delegate one or the certificate issuer itself).
+    if not chosen_response_hash:
+        raise AssertionError("no signature hash algorithm defined")
     crypto_util.verify_signed_payload(responder_cert.public_key(), response_ocsp.signature,
-                                      response_ocsp.tbs_response_bytes, chosen_hash)
+                                      response_ocsp.tbs_response_bytes, chosen_response_hash)
 
 
-def _translate_ocsp_query(cert_path, ocsp_output, ocsp_errors):
+def _translate_ocsp_query(cert_path: str, ocsp_output: str, ocsp_errors: str) -> bool:
     """Parse openssl's weird output to work out what it means."""
 
     states = ("good", "revoked", "unknown")

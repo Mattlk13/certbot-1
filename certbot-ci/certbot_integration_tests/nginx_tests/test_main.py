@@ -1,16 +1,18 @@
 """Module executing integration tests against certbot with nginx plugin."""
 import os
 import ssl
+from typing import Generator
+from typing import List
 
 import pytest
 
-from certbot_integration_tests.nginx_tests import context as nginx_context
+from certbot_integration_tests.nginx_tests.context import IntegrationTestsContext
 
 
-@pytest.fixture()
-def context(request):
+@pytest.fixture(name='context')
+def test_context(request: pytest.FixtureRequest) -> Generator[IntegrationTestsContext, None, None]:
     # Fixture request is a built-in pytest fixture describing current test request.
-    integration_test_context = nginx_context.IntegrationTestsContext(request)
+    integration_test_context = IntegrationTestsContext(request)
     try:
         yield integration_test_context
     finally:
@@ -27,10 +29,12 @@ def context(request):
     # No matching server block; default_server does not exist
     ('nginx5.{0}.wtf', ['--preferred-challenges', 'http'], {'default_server': False}),
     # Multiple domains, mix of matching and not
-    ('nginx6.{0}.wtf,nginx7.{0}.wtf', ['--preferred-challenges', 'http'], {'default_server': False}),
+    ('nginx6.{0}.wtf,nginx7.{0}.wtf', [
+        '--preferred-challenges', 'http'
+    ], {'default_server': False}),
 ], indirect=['context'])
-def test_certificate_deployment(certname_pattern, params, context):
-    # type: (str, list, nginx_context.IntegrationTestsContext) -> None
+def test_certificate_deployment(certname_pattern: str, params: List[str],
+                                context: IntegrationTestsContext) -> None:
     """
     Test various scenarios to deploy a certificate to nginx using certbot.
     """
@@ -41,7 +45,9 @@ def test_certificate_deployment(certname_pattern, params, context):
 
     lineage = domains.split(',')[0]
     server_cert = ssl.get_server_certificate(('localhost', context.tls_alpn_01_port))
-    with open(os.path.join(context.workspace, 'conf/live/{0}/cert.pem'.format(lineage)), 'r') as file:
+    with open(os.path.join(
+        context.workspace, 'conf/live/{0}/cert.pem'.format(lineage)), 'r'
+    ) as file:
         certbot_cert = file.read()
 
     assert server_cert == certbot_cert

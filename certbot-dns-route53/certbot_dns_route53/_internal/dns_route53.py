@@ -2,18 +2,24 @@
 import collections
 import logging
 import time
+from typing import Any
+from typing import Callable
+from typing import DefaultDict
+from typing import Dict
+from typing import Iterable
+from typing import List
+from typing import Type
 
 import boto3
 from botocore.exceptions import ClientError
 from botocore.exceptions import NoCredentialsError
-import zope.interface
 
-from acme.magic_typing import DefaultDict
-from acme.magic_typing import Dict
-from acme.magic_typing import List
+from acme import challenges
+from certbot import achallenges
 from certbot import errors
 from certbot import interfaces
-from certbot.plugins import dns_common
+from certbot.achallenges import AnnotatedChallenge
+from certbot.plugins import common
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +29,7 @@ INSTRUCTIONS = (
     "and add the necessary permissions for Route53 access.")
 
 
-@zope.interface.implementer(interfaces.IAuthenticator)
-@zope.interface.provider(interfaces.IPluginFactory)
-class Authenticator(dns_common.DNSAuthenticator):
+class Authenticator(common.Plugin, interfaces.Authenticator):
     """Route53 Authenticator
 
     This authenticator solves a DNS01 challenge by uploading the answer to AWS
@@ -36,21 +40,34 @@ class Authenticator(dns_common.DNSAuthenticator):
                    "DNS).")
     ttl = 10
 
-    def __init__(self, *args, **kwargs):
-        super(Authenticator, self).__init__(*args, **kwargs)
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
         self.r53 = boto3.client("route53")
-        self._resource_records = collections.defaultdict(list) # type: DefaultDict[str, List[Dict[str, str]]]
+        self._attempt_cleanup = False
+        self._resource_records: DefaultDict[str, List[Dict[str, str]]] = \
+            collections.defaultdict(list)
 
-    def more_info(self):  # pylint: disable=missing-function-docstring
+    def more_info(self) -> str:
         return "Solve a DNS01 challenge using AWS Route53"
 
-    def _setup_credentials(self):
+    @classmethod
+    def add_parser_arguments(cls, add: Callable[..., None]) -> None:
+        # This authenticator currently adds no extra arguments.
         pass
 
-    def _perform(self, domain, validation_name, validation):
+    def auth_hint(self, failed_achalls: List[achallenges.AnnotatedChallenge]) -> str:
+        return (
+            'The Certificate Authority failed to verify the DNS TXT records created by '
+            '--dns-route53. Ensure the above domains have their DNS hosted by AWS Route53.'
+        )
+
+    def prepare(self) -> None:
         pass
 
-    def perform(self, achalls):
+    def get_chall_pref(self, unused_domain: str) -> Iterable[Type[challenges.Challenge]]:
+        return [challenges.DNS01]
+
+    def perform(self, achalls: List[AnnotatedChallenge]) -> List[challenges.ChallengeResponse]:
         self._attempt_cleanup = True
 
         try:
@@ -68,13 +85,22 @@ class Authenticator(dns_common.DNSAuthenticator):
             raise errors.PluginError("\n".join([str(e), INSTRUCTIONS]))
         return [achall.response(achall.account_key) for achall in achalls]
 
-    def _cleanup(self, domain, validation_name, validation):
+    def cleanup(self, achalls: List[achallenges.AnnotatedChallenge]) -> None:
+        if self._attempt_cleanup:
+            for achall in achalls:
+                domain = achall.domain
+                validation_domain_name = achall.validation_domain_name(domain)
+                validation = achall.validation(achall.account_key)
+
+                self._cleanup(validation_domain_name, validation)
+
+    def _cleanup(self, validation_name: str, validation: str) -> None:
         try:
             self._change_txt_record("DELETE", validation_name, validation)
         except (NoCredentialsError, ClientError) as e:
             logger.debug('Encountered error during cleanup: %s', e, exc_info=True)
 
-    def _find_zone_id_for_domain(self, domain):
+    def _find_zone_id_for_domain(self, domain: str) -> str:
         """Find the zone id responsible a given FQDN.
 
            That is, the id for the zone whose name is the longest parent of the
@@ -104,7 +130,7 @@ class Authenticator(dns_common.DNSAuthenticator):
         zones.sort(key=lambda z: len(z[0]), reverse=True)
         return zones[0][1]
 
-    def _change_txt_record(self, action, validation_domain_name, validation):
+    def _change_txt_record(self, action: str, validation_domain_name: str, validation: str) -> str:
         zone_id = self._find_zone_id_for_domain(validation_domain_name)
 
         rrecords = self._resource_records[validation_domain_name]
@@ -140,7 +166,7 @@ class Authenticator(dns_common.DNSAuthenticator):
         )
         return response["ChangeInfo"]["Id"]
 
-    def _wait_for_change(self, change_id):
+    def _wait_for_change(self, change_id: str) -> None:
         """Wait for a change to be propagated to all Route53 DNS servers.
            https://docs.aws.amazon.com/Route53/latest/APIReference/API_GetChange.html
         """
@@ -152,3 +178,13 @@ class Authenticator(dns_common.DNSAuthenticator):
         raise errors.PluginError(
             "Timed out waiting for Route53 change. Current status: %s" %
             response["ChangeInfo"]["Status"])
+
+
+# Our route53 plugin was initially a 3rd party plugin named `certbot-route53:auth` as described at
+# https://github.com/certbot/certbot/issues/4688. This shim exists to allow installations using the
+# old plugin name of `certbot-route53:auth` to continue to work without cluttering things like
+# Certbot's help output with two route53 plugins.
+class HiddenAuthenticator(Authenticator):
+    """A hidden shim around certbot-dns-route53 for backwards compatibility."""
+
+    hidden = True

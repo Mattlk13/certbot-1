@@ -1,19 +1,18 @@
 """ Distribution specific override class for Fedora 29+ """
-import zope.interface
+from typing import Any
 
 from certbot import errors
-from certbot import interfaces
 from certbot import util
 from certbot_apache._internal import apache_util
 from certbot_apache._internal import configurator
 from certbot_apache._internal import parser
+from certbot_apache._internal.configurator import OsOptions
 
 
-@zope.interface.provider(interfaces.IPluginFactory)
 class FedoraConfigurator(configurator.ApacheConfigurator):
     """Fedora 29+ specific ApacheConfigurator override class"""
 
-    OS_DEFAULTS = dict(
+    OS_DEFAULTS = OsOptions(
         server_root="/etc/httpd",
         vhost_root="/etc/httpd/conf.d",
         vhost_files="*.conf",
@@ -23,16 +22,10 @@ class FedoraConfigurator(configurator.ApacheConfigurator):
         restart_cmd=['apachectl', 'graceful'],
         restart_cmd_alt=['apachectl', 'restart'],
         conftest_cmd=['apachectl', 'configtest'],
-        enmod=None,
-        dismod=None,
-        le_vhost_ext="-le-ssl.conf",
-        handle_modules=False,
-        handle_sites=False,
         challenge_location="/etc/httpd/conf.d",
-        bin=None,
     )
 
-    def config_test(self):
+    def config_test(self) -> None:
         """
         Override config_test to mitigate configtest error in vanilla installation
         of mod_ssl in Fedora. The error is caused by non-existent self-signed
@@ -40,19 +33,18 @@ class FedoraConfigurator(configurator.ApacheConfigurator):
         during the first (re)start of httpd.
         """
         try:
-            super(FedoraConfigurator, self).config_test()
+            super().config_test()
         except errors.MisconfigurationError:
             self._try_restart_fedora()
 
-    def get_parser(self):
+    def get_parser(self) -> "FedoraParser":
         """Initializes the ApacheParser"""
         return FedoraParser(
-            self.option("server_root"), self.option("vhost_root"),
-            self.version, configurator=self)
+            self.options.server_root, self, self.options.vhost_root, self.version)
 
-    def _try_restart_fedora(self):
+    def _try_restart_fedora(self) -> None:
         """
-        Tries to restart httpd using systemctl to generate the self signed keypair.
+        Tries to restart httpd using systemctl to generate the self signed key pair.
         """
         try:
             util.run_script(['systemctl', 'restart', 'httpd'])
@@ -60,35 +52,37 @@ class FedoraConfigurator(configurator.ApacheConfigurator):
             raise errors.MisconfigurationError(str(err))
 
         # Finish with actual config check to see if systemctl restart helped
-        super(FedoraConfigurator, self).config_test()
+        super().config_test()
 
-    def _prepare_options(self):
+    def _prepare_options(self) -> None:
         """
         Override the options dictionary initialization to keep using apachectl
         instead of httpd and so take advantages of this new bash script in newer versions
         of Fedora to restart httpd.
         """
-        super(FedoraConfigurator, self)._prepare_options()
-        self.options["restart_cmd"][0] = 'apachectl'
-        self.options["restart_cmd_alt"][0] = 'apachectl'
-        self.options["conftest_cmd"][0] = 'apachectl'
+        super()._prepare_options()
+        self.options.restart_cmd[0] = 'apachectl'
+        if not self.options.restart_cmd_alt:  # pragma: no cover
+            raise ValueError("OS option restart_cmd_alt must be set for Fedora.")
+        self.options.restart_cmd_alt[0] = 'apachectl'
+        self.options.conftest_cmd[0] = 'apachectl'
 
 
 class FedoraParser(parser.ApacheParser):
     """Fedora 29+ specific ApacheParser override class"""
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         # Fedora 29+ specific configuration file for Apache
         self.sysconfig_filep = "/etc/sysconfig/httpd"
-        super(FedoraParser, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
-    def update_runtime_variables(self):
+    def update_runtime_variables(self) -> None:
         """ Override for update_runtime_variables for custom parsing """
         # Opportunistic, works if SELinux not enforced
-        super(FedoraParser, self).update_runtime_variables()
+        super().update_runtime_variables()
         self._parse_sysconfig_var()
 
-    def _parse_sysconfig_var(self):
+    def _parse_sysconfig_var(self) -> None:
         """ Parses Apache CLI options from Fedora configuration file """
         defines = apache_util.parse_define_file(self.sysconfig_filep, "OPTIONS")
-        for k in defines:
-            self.variables[k] = defines[k]
+        for k, v in defines.items():
+            self.variables[k] = v

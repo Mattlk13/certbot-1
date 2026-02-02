@@ -2,11 +2,10 @@
 
 This module is an implementation of the `ACME protocol`_.
 
-.. _`ACME protocol`: https://ietf-wg-acme.github.io/acme
+.. _`ACME protocol`: https://datatracker.ietf.org/doc/html/rfc8555
 
 """
 import sys
-import warnings
 
 # This code exists to keep backwards compatibility with people using acme.jose
 # before it became the standalone josepy package.

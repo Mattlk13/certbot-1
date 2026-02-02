@@ -1,3 +1,11 @@
+..
+  Sphinx complains that this file isn't included in any toctree, however, we
+  currently link to it in the section about installing Certbot through Docker.
+  Setting :orphan: below suppresses this warning. See
+  https://www.sphinx-doc.org/en/master/usage/restructuredtext/field-lists.html#special-metadata-fields.
+
+:orphan:
+
 ============
 Ciphersuites
 ============
@@ -80,8 +88,8 @@ its preferences in accordance with its own policy or its administrators'
 preferences, and use different cryptographic mechanisms or parameters,
 or a different priority order, than the defaults provided by Certbot.
 
-If you don't use Certbot to configure your server directly, because the 
-client doesn't integrate with your server software or because you chose 
+If you don't use Certbot to configure your server directly, because the
+client doesn't integrate with your server software or because you chose
 not to use this integration, then the cryptographic defaults haven't been
 modified, and the cryptography chosen by the server will still be whatever
 the default for your software was.  For example, if you obtain a
@@ -110,8 +118,7 @@ to most-backwards compatible). The client will follow the Mozilla defaults
 for the *Intermediate* configuration by default, at least with regards to
 ciphersuites and TLS versions. Mozilla's web site describes which client
 software will be compatible with each configuration. You can also use
-the Qualys SSL Labs site, which Certbot will suggest
-when installing a certificate, to test your server and see whether it
+the Qualys SSL Labs site to test your server and see whether it
 will be compatible with particular software versions.
 
 The Let's Encrypt project expects to follow the Mozilla recommendations
@@ -181,12 +188,17 @@ BetterCrypto.org, a collaboration of mostly European IT security experts, has pu
 
 https://bettercrypto.org/
 
-FF-DHE Internet-Draft
-~~~~~~~~~~~~~~~~~~~~~
+RFC 7919
+~~~~~~~~
 
-Gillmor's Internet-Draft "Negotiated Discrete Log Diffie-Hellman Ephemeral Parameters for TLS" is being developed at the IETF TLS WG.  It advocates using *standardized* DH groups in all cases, not individually-chosen ones (mostly because of the Triple Handshake attack which can involve maliciously choosing invalid DH groups).  The draft provides a list of recommended groups, with primes beginning at 2048 bits and going up from there.  It also has a new protocol mechanism for agreeing to use these groups, with the possibility of backwards compatibility (and use of weaker DH groups) for older clients and servers that don't know about this mechanism.
+IETF has published a document, RFC 7919, "Negotiated Discrete Log Diffie-Hellman Ephemeral Parameters for TLS".
+It advocates using *standardized* DH groups in all cases, not individually-chosen ones (mostly because of the Triple
+Handshake attack which can involve maliciously choosing invalid DH groups).  The RFC provides a list of recommended
+groups, with primes beginning at 2048 bits and going up from there.  It also has a new protocol mechanism for agreeing
+to use these groups, with the possibility of backwards compatibility (and use of weaker DH groups) for older clients
+and servers that don't know about this mechanism.
 
-https://tools.ietf.org/html/draft-ietf-tls-negotiated-ff-dhe-10
+https://datatracker.ietf.org/doc/html/rfc7919
 
 Mozilla
 ~~~~~~~
@@ -209,17 +221,17 @@ Keylength.com
 
 Damien Giry collects recommendations by academic researchers and standards organizations about keylengths for particular cryptoperiods, years, or security levels.  The keylength recommendations of the various sources are summarized in a chart.  This site has been updated over time and includes expert guidance from eight sources published between 2000 and 2017.
 
-http://www.keylength.com/
+https://www.keylength.com/
 
 NIST
 ~~~~
-NISA published its "NIST Special Publication 800-52 Revision 1: Guidelines for the Selection, Configuration, and Use of Transport Layer Security (TLS) Implementations"
+NIST published its "NIST Special Publication 800-52 Revision 2: Guidelines for the Selection, Configuration, and Use of Transport Layer Security (TLS) Implementations"
 
-http://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-52r1.pdf
+https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-52r2.pdf
 
-and its "NIST Special Publication 800-57: Recommendation for Key Management – Part 1: General (Revision 3)"
+and its "NIST Special Publication 800-57: Recommendation for Key Management – Part 1: General (Revision 5)"
 
-http://csrc.nist.gov/publications/nistpubs/800-57/sp800-57_part1_rev3_general.pdf
+https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-57pt1r5.pdf
 
 ENISA
 ~~~~~
@@ -255,7 +267,7 @@ https://docs.aws.amazon.com/ElasticLoadBalancing/latest/DeveloperGuide/elb-secur
 U.S. Government 18F
 ~~~~~~~~~~~~~~~~~~~
 
-The 18F site (https://18f.gsa.gov/) is using 
+The 18F site (https://18f.gsa.gov/) is using
 
 ::
 

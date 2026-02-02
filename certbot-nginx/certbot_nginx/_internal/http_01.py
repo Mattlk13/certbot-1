@@ -1,14 +1,23 @@
 """A class that performs HTTP-01 challenges for Nginx"""
 
+import io
 import logging
+from typing import Any
+from typing import List
+from typing import Optional
+from typing import TYPE_CHECKING
 
 from acme import challenges
-from acme.magic_typing import List
+from acme.challenges import KeyAuthorizationChallengeResponse
 from certbot import errors
+from certbot.achallenges import KeyAuthorizationAnnotatedChallenge
 from certbot.compat import os
 from certbot.plugins import common
 from certbot_nginx._internal import nginxparser
-from certbot_nginx._internal import obj
+from certbot_nginx._internal.obj import Addr
+
+if TYPE_CHECKING:
+    from certbot_nginx._internal.configurator import NginxConfigurator
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +42,16 @@ class NginxHttp01(common.ChallengePerformer):
 
     """
 
-    def __init__(self, configurator):
-        super(NginxHttp01, self).__init__(configurator)
+    def __init__(self, configurator: "NginxConfigurator") -> None:
+        super().__init__(configurator)
+        self.configurator: "NginxConfigurator"
         self.challenge_conf = os.path.join(
             configurator.config.config_dir, "le_http_01_cert_challenge.conf")
 
-    def perform(self):
+    def perform(self) -> List[KeyAuthorizationChallengeResponse]:
         """Perform a challenge on Nginx.
 
-        :returns: list of :class:`certbot.acme.challenges.HTTP01Response`
+        :returns: list of :class:`acme.challenges.KeyAuthorizationChallengeResponse`
         :rtype: list
 
         """
@@ -58,7 +68,7 @@ class NginxHttp01(common.ChallengePerformer):
 
         return responses
 
-    def _mod_config(self):
+    def _mod_config(self) -> None:
         """Modifies Nginx config to include server_names_hash_bucket_size directive
            and server challenge blocks.
 
@@ -73,23 +83,50 @@ class NginxHttp01(common.ChallengePerformer):
         bucket_directive = ['\n', 'server_names_hash_bucket_size', ' ', '128']
 
         main = self.configurator.parser.parsed[root]
+        # insert include directive
         for line in main:
             if line[0] == ['http']:
                 body = line[1]
-                found_bucket = False
-                posn = 0
-                for inner_line in body:
-                    if inner_line[0] == bucket_directive[1]:
-                        if int(inner_line[1]) < int(bucket_directive[3]):
-                            body[posn] = bucket_directive
-                        found_bucket = True
-                    posn += 1
-                if not found_bucket:
-                    body.insert(0, bucket_directive)
                 if include_directive not in body:
                     body.insert(0, include_directive)
                 included = True
                 break
+
+        # insert or update the server_names_hash_bucket_size directive
+        # We have several options here.
+        # 1) Only check nginx.conf
+        # 2) Check included files, assuming they've been included inside http already,
+        #     because if they added it outside an http block their config is broken anyway
+        # 3) Add metadata during parsing to note if an include happened inside the http block
+        #
+        # 1 causes bugs; see https://github.com/certbot/certbot/issues/5199
+        # 3 would require a more extensive rewrite and probably isn't necessary anyway
+        # So this code uses option 2.
+        found_bucket = False
+        for file_contents in self.configurator.parser.parsed.values():
+            body = file_contents # already inside http in an included file
+            for line in file_contents:
+                if line[0] == ['http']:
+                    body = line[1] # enter http because this is nginx.conf
+                    break
+
+            for posn, inner_line in enumerate(body):
+                if inner_line[0] == bucket_directive[1]:
+                    if int(inner_line[1]) < int(bucket_directive[3]):
+                        body[posn] = bucket_directive
+                    found_bucket = True
+                    break
+
+            if found_bucket:
+                break
+
+        if not found_bucket:
+            for line in main:
+                if line[0] == ['http']:
+                    body = line[1]
+                    body.insert(0, bucket_directive)
+                    break
+
         if not included:
             raise errors.MisconfigurationError(
                 'Certbot could not find a block to include '
@@ -102,48 +139,48 @@ class NginxHttp01(common.ChallengePerformer):
         self.configurator.reverter.register_file_creation(
             True, self.challenge_conf)
 
-        with open(self.challenge_conf, "w") as new_conf:
+        with io.open(self.challenge_conf, "w", encoding="utf-8") as new_conf:
             nginxparser.dump(config, new_conf)
 
-    def _default_listen_addresses(self):
+    def _default_listen_addresses(self) -> List[Addr]:
         """Finds addresses for a challenge block to listen on.
         :returns: list of :class:`certbot_nginx._internal.obj.Addr` to apply
         :rtype: list
         """
-        addresses = [] # type: List[obj.Addr]
+        addresses: List[Optional[Addr]] = []
         default_addr = "%s" % self.configurator.config.http01_port
         ipv6_addr = "[::]:{0}".format(
             self.configurator.config.http01_port)
         port = self.configurator.config.http01_port
 
-        ipv6, ipv6only = self.configurator.ipv6_info(port)
+        ipv6, ipv6only = self.configurator.ipv6_info(str(port))
 
         if ipv6:
             # If IPv6 is active in Nginx configuration
             if not ipv6only:
                 # If ipv6only=on is not already present in the config
                 ipv6_addr = ipv6_addr + " ipv6only=on"
-            addresses = [obj.Addr.fromstring(default_addr),
-                         obj.Addr.fromstring(ipv6_addr)]
-            logger.info(("Using default addresses %s and %s for authentication."),
+            addresses = [Addr.fromstring(default_addr),
+                         Addr.fromstring(ipv6_addr)]
+            logger.debug(("Using default addresses %s and %s for authentication."),
                         default_addr,
                         ipv6_addr)
         else:
-            addresses = [obj.Addr.fromstring(default_addr)]
-            logger.info("Using default address %s for authentication.",
+            addresses = [Addr.fromstring(default_addr)]
+            logger.debug("Using default address %s for authentication.",
                         default_addr)
-        return addresses
 
-    def _get_validation_path(self, achall):
+        return [address for address in addresses if address]
+
+    def _get_validation_path(self, achall: KeyAuthorizationAnnotatedChallenge) -> str:
         return os.sep + os.path.join(challenges.HTTP01.URI_ROOT_PATH, achall.chall.encode("token"))
 
-    def _make_server_block(self, achall):
+    def _make_server_block(self, achall: KeyAuthorizationAnnotatedChallenge) -> List[Any]:
         """Creates a server block for a challenge.
+
         :param achall: Annotated HTTP-01 challenge
-        :type achall:
-            :class:`certbot.achallenges.KeyAuthorizationAnnotatedChallenge`
-        :param list addrs: addresses of challenged domain
-            :class:`list` of type :class:`~nginx.obj.Addr`
+        :type achall: :class:`certbot.achallenges.KeyAuthorizationAnnotatedChallenge`
+
         :returns: server block for the challenge host
         :rtype: list
         """
@@ -161,7 +198,8 @@ class NginxHttp01(common.ChallengePerformer):
         # TODO: do we want to return something else if they otherwise access this block?
         return [['server'], block]
 
-    def _location_directive_for_achall(self, achall):
+    def _location_directive_for_achall(self, achall: KeyAuthorizationAnnotatedChallenge
+                                       ) -> List[Any]:
         validation = achall.validation(achall.account_key)
         validation_path = self._get_validation_path(achall)
 
@@ -170,35 +208,35 @@ class NginxHttp01(common.ChallengePerformer):
                                ['return', ' ', '200', ' ', validation]]]
         return location_directive
 
-
-    def _make_or_mod_server_block(self, achall):
-        """Modifies a server block to respond to a challenge.
+    def _make_or_mod_server_block(self, achall: KeyAuthorizationAnnotatedChallenge
+                                  ) -> Optional[List[Any]]:
+        """Modifies server blocks to respond to a challenge. Returns a new HTTP server block
+           to add to the configuration if an existing one can't be found.
 
         :param achall: Annotated HTTP-01 challenge
-        :type achall:
-            :class:`certbot.achallenges.KeyAuthorizationAnnotatedChallenge`
+        :type achall: :class:`certbot.achallenges.KeyAuthorizationAnnotatedChallenge`
+
+        :returns: new server block to be added, if any
+        :rtype: list
 
         """
-        try:
-            vhosts = self.configurator.choose_redirect_vhosts(achall.domain,
-                '%i' % self.configurator.config.http01_port, create_if_no_match=True)
-        except errors.MisconfigurationError:
+        http_vhosts, https_vhosts = self.configurator.choose_auth_vhosts(achall.domain)
+
+        new_vhost: Optional[List[Any]] = None
+        if not http_vhosts:
             # Couldn't find either a matching name+port server block
             # or a port+default_server block, so create a dummy block
-            return self._make_server_block(achall)
+            new_vhost = self._make_server_block(achall)
 
-        # len is max 1 because Nginx doesn't authenticate wildcards
-        # if len were or vhosts None, we would have errored
-        vhost = vhosts[0]
+        # Modify any existing server blocks
+        for vhost in set(http_vhosts + https_vhosts):
+            location_directive = [self._location_directive_for_achall(achall)]
 
-        # Modify existing server block
-        location_directive = [self._location_directive_for_achall(achall)]
+            self.configurator.parser.add_server_directives(vhost, location_directive)
 
-        self.configurator.parser.add_server_directives(vhost,
-            location_directive)
+            rewrite_directive = [['rewrite', ' ', '^(/.well-known/acme-challenge/.*)',
+                                  ' ', '$1', ' ', 'break']]
+            self.configurator.parser.add_server_directives(
+                vhost, rewrite_directive, insert_at_top=True)
 
-        rewrite_directive = [['rewrite', ' ', '^(/.well-known/acme-challenge/.*)',
-                                ' ', '$1', ' ', 'break']]
-        self.configurator.parser.add_server_directives(vhost,
-            rewrite_directive, insert_at_top=True)
-        return None
+        return new_vhost

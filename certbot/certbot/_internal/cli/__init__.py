@@ -1,87 +1,73 @@
 """Certbot command line argument & config processing."""
 # pylint: disable=too-many-lines
-from __future__ import print_function
+import argparse
 import logging
 import logging.handlers
-import argparse
 import sys
-import certbot._internal.plugins.selection as plugin_selection
-from certbot._internal.plugins import disco as plugins_disco
+from typing import Any
+from typing import List
+from typing import Optional
+from typing import Type
 
-from acme.magic_typing import Optional
-
-# pylint: disable=ungrouped-imports
 import certbot
+from certbot.configuration import NamespaceConfig
 from certbot._internal import constants
-
-import certbot.plugins.enhancements as enhancements
-
-
-from certbot._internal.cli.cli_constants import (
-    LEAUTO,
-    old_path_fragment,
-    new_path_prefix,
-    cli_command,
-    SHORT_USAGE,
-    COMMAND_OVERVIEW,
-    HELP_AND_VERSION_USAGE,
-    ARGPARSE_PARAMS_TO_REMOVE,
-    EXIT_ACTIONS,
-    ZERO_ARG_ACTIONS,
-    VAR_MODIFIERS
-)
-
-from certbot._internal.cli.cli_utils import (
-    _Default,
-    read_file,
-    flag_default,
-    config_help,
-    HelpfulArgumentGroup,
-    CustomHelpFormatter,
-    _DomainsAction,
-    add_domains,
-    CaseInsensitiveList,
-    _user_agent_comment_type,
-    _EncodeReasonAction,
-    parse_preferred_challenges,
-    _PrefChallAction,
-    _DeployHookAction,
-    _RenewHookAction,
-    nonnegative_int
-)
-
-# These imports depend on cli_constants and cli_utils.
-from certbot._internal.cli.report_config_interaction import report_config_interaction
-from certbot._internal.cli.verb_help import VERB_HELP, VERB_HELP_MAP
+from certbot._internal.cli.cli_constants import ARGPARSE_PARAMS_TO_REMOVE
+from certbot._internal.cli.cli_constants import cli_command
+from certbot._internal.cli.cli_constants import COMMAND_OVERVIEW
+from certbot._internal.cli.cli_constants import DEPRECATED_OPTIONS
+from certbot._internal.cli.cli_constants import EXIT_ACTIONS
+from certbot._internal.cli.cli_constants import HELP_AND_VERSION_USAGE
+from certbot._internal.cli.cli_constants import SHORT_USAGE
+from certbot._internal.cli.cli_constants import VAR_MODIFIERS
+from certbot._internal.cli.cli_constants import ZERO_ARG_ACTIONS
+from certbot._internal.cli.cli_utils import _DeployHookAction
+from certbot._internal.cli.cli_utils import _DomainsAction
+from certbot._internal.cli.cli_utils import _EncodeReasonAction
+from certbot._internal.cli.cli_utils import _PrefChallAction
+from certbot._internal.cli.cli_utils import _RenewHookAction
+from certbot._internal.cli.cli_utils import _user_agent_comment_type
+from certbot._internal.cli.cli_utils import add_domains
+from certbot._internal.cli.cli_utils import CaseInsensitiveList
+from certbot._internal.cli.cli_utils import config_help
+from certbot._internal.cli.cli_utils import CustomHelpFormatter
+from certbot._internal.cli.cli_utils import flag_default
+from certbot._internal.cli.cli_utils import HelpfulArgumentGroup
+from certbot._internal.cli.cli_utils import nonnegative_int
+from certbot._internal.cli.cli_utils import parse_preferred_challenges
+from certbot._internal.cli.cli_utils import read_file
+from certbot._internal.cli.cli_utils import set_test_server_options
 from certbot._internal.cli.group_adder import _add_all_groups
-from certbot._internal.cli.subparsers import _create_subparsers
+from certbot._internal.cli.helpful import HelpfulArgumentParser
 from certbot._internal.cli.paths_parser import _paths_parser
 from certbot._internal.cli.plugins_parsing import _plugins_parsing
-
-# These imports depend on some or all of the submodules for cli.
-from certbot._internal.cli.helpful import HelpfulArgumentParser
-# pylint: enable=ungrouped-imports
-
+from certbot._internal.cli.subparsers import _create_subparsers
+from certbot._internal.cli.verb_help import VERB_HELP
+from certbot._internal.cli.verb_help import VERB_HELP_MAP
+from certbot._internal.plugins import disco as plugins_disco
+import certbot._internal.plugins.selection as plugin_selection
+from certbot.plugins import enhancements
 
 logger = logging.getLogger(__name__)
 
 
 # Global, to save us from a lot of argument passing within the scope of this module
-helpful_parser = None  # type: Optional[HelpfulArgumentParser]
+helpful_parser: Optional[HelpfulArgumentParser] = None
 
 
-def prepare_and_parse_args(plugins, args, detect_defaults=False):
+def prepare_and_parse_args(plugins: plugins_disco.PluginsRegistry, args: List[str]
+                           ) -> NamespaceConfig:
     """Returns parsed command line arguments.
 
     :param .PluginsRegistry plugins: available plugins
     :param list args: command line arguments with the program name removed
 
     :returns: parsed command line arguments
-    :rtype: argparse.Namespace
+    :rtype: configuration.NamespaceConfig
 
     """
 
-    helpful = HelpfulArgumentParser(args, plugins, detect_defaults)
+    helpful = HelpfulArgumentParser(args, plugins)
     _add_all_groups(helpful)
 
     # --help is automatically provided by argparse
@@ -90,6 +76,11 @@ def prepare_and_parse_args(plugins, args, detect_defaults=False):
         default=flag_default("verbose_count"), help="This flag can be used "
         "multiple times to incrementally increase the verbosity of output, "
         "e.g. -vvv.")
+    # This is for developers to set the level in the cli.ini, and overrides
+    # the --verbose flag
+    helpful.add(
+        None, "--verbose-level", dest="verbose_level",
+        default=flag_default("verbose_level"), help=argparse.SUPPRESS)
     helpful.add(
         None, "-t", "--text", dest="text_mode", action="store_true",
         default=flag_default("text_mode"), help=argparse.SUPPRESS)
@@ -100,6 +91,11 @@ def prepare_and_parse_args(plugins, args, detect_defaults=False):
              "be kept by Certbot's built in log rotation. Setting this "
              "flag to 0 disables log rotation entirely, causing "
              "Certbot to always append to the same log file.")
+    helpful.add(
+        None, "--preconfigured-renewal", dest="preconfigured_renewal",
+        action="store_true", default=flag_default("preconfigured_renewal"),
+        help=argparse.SUPPRESS
+    )
     helpful.add(
         [None, "automation", "run", "certonly", "enhance"],
         "-n", "--non-interactive", "--noninteractive",
@@ -120,17 +116,12 @@ def prepare_and_parse_args(plugins, args, detect_defaults=False):
         "-d", "--domains", "--domain", dest="domains",
         metavar="DOMAIN", action=_DomainsAction,
         default=flag_default("domains"),
-        help="Domain names to apply. For multiple domains you can use "
-             "multiple -d flags or enter a comma separated list of domains "
-             "as a parameter. The first domain provided will be the "
-             "subject CN of the certificate, and all domains will be "
-             "Subject Alternative Names on the certificate. "
-             "The first domain will also be used in "
-             "some software user interfaces and as the file paths for the "
-             "certificate and related material unless otherwise "
-             "specified or you already have a certificate with the same "
-             "name. In the case of a name collision it will append a number "
-             "like 0001 to the file path name. (default: Ask)")
+        help="Domain names to include. For multiple domains you can use multiple -d flags "
+             "or enter a comma separated list of domains as a parameter. All domains will "
+             "be included as Subject Alternative Names on the certificate. The first domain "
+             "will be used as the certificate name, unless otherwise specified or if you "
+             "already have a certificate with the same name. In the case of a name conflict, "
+             "a number like -0001 will be appended to the certificate name. (default: Ask)")
     helpful.add(
         [None, "run", "certonly", "register"],
         "--eab-kid", dest="eab_kid",
@@ -145,10 +136,12 @@ def prepare_and_parse_args(plugins, args, detect_defaults=False):
     )
     helpful.add(
         [None, "run", "certonly", "manage", "delete", "certificates",
-         "renew", "enhance"], "--cert-name", dest="certname",
+         "renew", "enhance", "reconfigure"], "--cert-name", dest="certname",
         metavar="CERTNAME", default=flag_default("certname"),
         help="Certificate name to apply. This name is used by Certbot for housekeeping "
              "and in file paths; it doesn't affect the content of the certificate itself. "
+             "Certificate name cannot contain filepath separators (i.e. '/' or '\\', depending "
+             "on the platform). "
              "To see certificate names, run 'certbot certificates'. "
              "When creating a new certificate, specifies the new certificate's name. "
              "(default: the first provided domain or the name of an existing "
@@ -157,27 +150,32 @@ def prepare_and_parse_args(plugins, args, detect_defaults=False):
         [None, "testing", "renew", "certonly"],
         "--dry-run", action="store_true", dest="dry_run",
         default=flag_default("dry_run"),
-        help="Perform a test run of the client, obtaining test (invalid) certificates"
-             " but not saving them to disk. This can currently only be used"
-             " with the 'certonly' and 'renew' subcommands. \nNote: Although --dry-run"
-             " tries to avoid making any persistent changes on a system, it "
-             " is not completely side-effect free: if used with webserver authenticator plugins"
-             " like apache and nginx, it makes and then reverts temporary config changes"
-             " in order to obtain test certificates, and reloads webservers to deploy and then"
-             " roll back those changes.  It also calls --pre-hook and --post-hook commands"
-             " if they are defined because they may be necessary to accurately simulate"
-             " renewal. --deploy-hook commands are not called.")
+        help="Perform a test run against the Let's Encrypt staging server, obtaining test"
+             " (invalid) certificates but not saving them to disk. This can only be used with the"
+             " 'certonly' and 'renew' subcommands. It may trigger webserver reloads to "
+             " temporarily modify & roll back configuration files."
+             " --pre-hook and --post-hook commands run by default."
+             " --deploy-hook commands do not run, unless enabled by --run-deploy-hooks."
+             " The test server may be overridden with --server.")
+    helpful.add(
+        ["testing", "renew", "certonly", "reconfigure"],
+        "--run-deploy-hooks", action="store_true", dest="run_deploy_hooks",
+        default=flag_default("run_deploy_hooks"),
+        help="When performing a test run using `--dry-run` or `reconfigure`, run any applicable"
+             " deploy hooks. This includes hooks set on the command line, saved in the"
+             " certificate's renewal configuration file, or present in the renewal-hooks directory."
+             " To exclude directory hooks, use --no-directory-hooks. The hook(s) will only"
+             " be run if the dry run succeeds, and will use the current active certificate, not"
+             " the temporary test certificate acquired during the dry run. This flag is recommended"
+             " when modifying the deploy hook using `reconfigure`.")
     helpful.add(
         ["register", "automation"], "--register-unsafely-without-email", action="store_true",
         default=flag_default("register_unsafely_without_email"),
         help="Specifying this flag enables registering an account with no "
-             "email address. This is strongly discouraged, because in the "
-             "event of key loss or account compromise you will irrevocably "
-             "lose access to your account. You will also be unable to receive "
-             "notice about impending expiration or revocation of your "
-             "certificates. Updates to the Subscriber Agreement will still "
-             "affect you, and will be effective 14 days after posting an "
-             "update to the web site.")
+             "email address. This is strongly discouraged, because you will be "
+             "unable to receive notice about impending expiration or "
+             "revocation of your certificates or problems with your Certbot "
+             "installation that will lead to failure to renew.")
     helpful.add(
         ["register", "update_account", "unregister", "automation"], "-m", "--email",
         default=flag_default("email"),
@@ -224,6 +222,20 @@ def prepare_and_parse_args(plugins, args, detect_defaults=False):
         action="store_true", default=flag_default("reuse_key"),
         help="When renewing, use the same private key as the existing "
              "certificate.")
+    helpful.add(
+        "automation", "--no-reuse-key", dest="reuse_key",
+        action="store_false", default=flag_default("reuse_key"),
+        help="When renewing, do not use the same private key as the existing "
+             "certificate. Not reusing private keys is the default behavior of "
+             "Certbot. This option may be used to unset --reuse-key on an "
+             "existing certificate.")
+    helpful.add(
+        "automation", "--new-key",
+        dest="new_key", action="store_true", default=flag_default("new_key"),
+        help="When renewing or replacing a certificate, generate a new private key, "
+             "even if --reuse-key is set on the existing certificate. Combining "
+             "--new-key and --reuse-key will result in the private key being replaced and "
+             "then reused in future renewals.")
 
     helpful.add(
         ["automation", "renew", "certonly"],
@@ -248,27 +260,6 @@ def prepare_and_parse_args(plugins, args, detect_defaults=False):
         help="Allow making a certificate lineage that duplicates an existing one "
              "(both can be renewed in parallel)")
     helpful.add(
-        "automation", "--os-packages-only", action="store_true",
-        default=flag_default("os_packages_only"),
-        help="(certbot-auto only) install OS package dependencies and then stop")
-    helpful.add(
-        "automation", "--no-self-upgrade", action="store_true",
-        default=flag_default("no_self_upgrade"),
-        help="(certbot-auto only) prevent the certbot-auto script from"
-             " upgrading itself to newer released versions (default: Upgrade"
-             " automatically)")
-    helpful.add(
-        "automation", "--no-bootstrap", action="store_true",
-        default=flag_default("no_bootstrap"),
-        help="(certbot-auto only) prevent the certbot-auto script from"
-             " installing OS-level dependencies (default: Prompt to install "
-             " OS-wide dependencies, but exit if the user says 'No')")
-    helpful.add(
-        "automation", "--no-permissions-check", action="store_true",
-        default=flag_default("no_permissions_check"),
-        help="(certbot-auto only) skip the check on the file system"
-             " permissions of the certbot-auto script")
-    helpful.add(
         ["automation", "renew", "certonly", "run"],
         "-q", "--quiet", dest="quiet", action="store_true",
         default=flag_default("quiet"),
@@ -277,17 +268,18 @@ def prepare_and_parse_args(plugins, args, detect_defaults=False):
     # overwrites server, handled in HelpfulArgumentParser.parse_args()
     helpful.add(["testing", "revoke", "run"], "--test-cert", "--staging",
         dest="staging", action="store_true", default=flag_default("staging"),
-        help="Use the staging server to obtain or revoke test (invalid) certificates; equivalent"
-             " to --server " + constants.STAGING_URI)
+        help="Use the Let's Encrypt staging server to obtain or revoke test (invalid) "
+             "certificates; equivalent to --server " + constants.STAGING_URI)
     helpful.add(
         "testing", "--debug", action="store_true", default=flag_default("debug"),
-        help="Show tracebacks in case of errors, and allow certbot-auto "
-             "execution on experimental platforms")
+        help="Show tracebacks in case of errors")
     helpful.add(
         [None, "certonly", "run"], "--debug-challenges", action="store_true",
         default=flag_default("debug_challenges"),
         help="After setting up challenges, wait for user input before "
-             "submitting to CA")
+             "submitting to CA. When used in combination with the `-v` "
+             "option, the challenge URLs or FQDNs and their expected "
+             "return values are shown.")
     helpful.add(
         "testing", "--no-verify-ssl", action="store_true",
         help=config_help("no_verify_ssl"),
@@ -312,6 +304,16 @@ def prepare_and_parse_args(plugins, args, detect_defaults=False):
     helpful.add(
         "security", "--rsa-key-size", type=int, metavar="N",
         default=flag_default("rsa_key_size"), help=config_help("rsa_key_size"))
+    helpful.add(
+        "security", "--key-type", choices=['rsa', 'ecdsa'], type=str,
+        default=flag_default("key_type"), help=config_help("key_type"))
+    helpful.add(
+        "security", "--elliptic-curve", type=str, choices=[
+            'secp256r1',
+            'secp384r1',
+            'secp521r1',
+        ], metavar="N",
+        default=flag_default("elliptic_curve"), help=config_help("elliptic_curve"))
     helpful.add(
         "security", "--must-staple", action="store_true",
         dest="must_staple", default=flag_default("must_staple"),
@@ -361,6 +363,11 @@ def prepare_and_parse_args(plugins, args, detect_defaults=False):
         help="Require that all configuration files are owned by the current "
              "user; only needed if your config is somewhere unsafe like /tmp/")
     helpful.add(
+        [None, "certonly", "renew", "run"],
+        "--preferred-chain", dest="preferred_chain",
+        default=flag_default("preferred_chain"), help=config_help("preferred_chain")
+    )
+    helpful.add(
         ["manual", "standalone", "certonly", "renew"],
         "--preferred-challenges", dest="pref_challs",
         action=_PrefChallAction, default=flag_default("pref_challs"),
@@ -373,37 +380,53 @@ def prepare_and_parse_args(plugins, args, detect_defaults=False):
              'than "http-01", Certbot will select the latest version '
              'automatically.')
     helpful.add(
-        "renew", "--pre-hook",
+        [None, "certonly", "run"], "--issuance-timeout", type=nonnegative_int,
+        dest="issuance_timeout",
+        default=flag_default("issuance_timeout"),
+        help=config_help("issuance_timeout"))
+    helpful.add(
+        ["renew", "reconfigure"], "--pre-hook",
         help="Command to be run in a shell before obtaining any certificates."
+        " Unless --disable-hook-validation is used, the command’s first word"
+        " must be the absolute pathname of an executable or one found via the"
+        " PATH environment variable."
         " Intended primarily for renewal, where it can be used to temporarily"
         " shut down a webserver that might conflict with the standalone"
         " plugin. This will only be called if a certificate is actually to be"
         " obtained/renewed. When renewing several certificates that have"
         " identical pre-hooks, only the first will be executed.")
     helpful.add(
-        "renew", "--post-hook",
+        ["renew", "reconfigure"], "--post-hook",
         help="Command to be run in a shell after attempting to obtain/renew"
-        " certificates. Can be used to deploy renewed certificates, or to"
+        " certificates."
+        " Unless --disable-hook-validation is used, the command’s first word"
+        " must be the absolute pathname of an executable or one found via the"
+        " PATH environment variable."
+        " Can be used to deploy renewed certificates, or to"
         " restart any servers that were stopped by --pre-hook. This is only"
         " run if an attempt was made to obtain/renew a certificate. If"
         " multiple renewed certificates have identical post-hooks, only"
         " one will be run.")
-    helpful.add("renew", "--renew-hook",
+    helpful.add(["renew", "reconfigure"], "--renew-hook",
                 action=_RenewHookAction, help=argparse.SUPPRESS)
     helpful.add(
         "renew", "--no-random-sleep-on-renew", action="store_false",
         default=flag_default("random_sleep_on_renew"), dest="random_sleep_on_renew",
         help=argparse.SUPPRESS)
     helpful.add(
-        "renew", "--deploy-hook", action=_DeployHookAction,
+        ["renew", "reconfigure"], "--deploy-hook", action=_DeployHookAction,
         help='Command to be run in a shell once for each successfully'
-        ' issued certificate. For this command, the shell variable'
+        ' issued certificate.'
+        ' Unless --disable-hook-validation is used, the command’s first word'
+        ' must be the absolute pathname of an executable or one found via the'
+        ' PATH environment variable.'
+        ' For this command, the shell variable'
         ' $RENEWED_LINEAGE will point to the config live subdirectory'
         ' (for example, "/etc/letsencrypt/live/example.com") containing'
         ' the new certificates and keys; the shell variable'
         ' $RENEWED_DOMAINS will contain a space-delimited list of'
         ' renewed certificate domains (for example, "example.com'
-        ' www.example.com"')
+        ' www.example.com")')
     helpful.add(
         "renew", "--disable-hook-validation",
         action="store_false", dest="validate_hooks",
@@ -432,7 +455,13 @@ def prepare_and_parse_args(plugins, args, detect_defaults=False):
     helpful.add(
         "renew", "--no-autorenew", action="store_false",
         default=flag_default("autorenew"), dest="autorenew",
-        help="Disable auto renewal of certificates.")
+        help="Disable auto renewal of certificates. (default: False)")
+
+    # Deprecated arguments
+    helpful.add_deprecated_argument("--os-packages-only", 0)
+    helpful.add_deprecated_argument("--no-self-upgrade", 0)
+    helpful.add_deprecated_argument("--no-bootstrap", 0)
+    helpful.add_deprecated_argument("--no-permissions-check", 0)
 
     # Populate the command line parameters for new style enhancements
     enhancements.populate_cli(helpful.add)
@@ -443,86 +472,16 @@ def prepare_and_parse_args(plugins, args, detect_defaults=False):
     # parser (--help should display plugin-specific options last)
     _plugins_parsing(helpful, plugins)
 
-    if not detect_defaults:
-        global helpful_parser # pylint: disable=global-statement
-        helpful_parser = helpful
+    global helpful_parser # pylint: disable=global-statement
+    helpful_parser = helpful
     return helpful.parse_args()
 
 
-def set_by_cli(var):
-    """
-    Return True if a particular config variable has been set by the user
-    (CLI or config file) including if the user explicitly set it to the
-    default.  Returns False if the variable was assigned a default value.
-    """
-    detector = set_by_cli.detector  # type: ignore
-    if detector is None and helpful_parser is not None:
-        # Setup on first run: `detector` is a weird version of config in which
-        # the default value of every attribute is wrangled to be boolean-false
-        plugins = plugins_disco.PluginsRegistry.find_all()
-        # reconstructed_args == sys.argv[1:], or whatever was passed to main()
-        reconstructed_args = helpful_parser.args + [helpful_parser.verb]
-        detector = set_by_cli.detector = prepare_and_parse_args(  # type: ignore
-            plugins, reconstructed_args, detect_defaults=True)
-        # propagate plugin requests: eg --standalone modifies config.authenticator
-        detector.authenticator, detector.installer = (  # type: ignore
-            plugin_selection.cli_plugin_requests(detector))
-
-    if not isinstance(getattr(detector, var), _Default):
-        logger.debug("Var %s=%s (set by user).", var, getattr(detector, var))
-        return True
-
-    for modifier in VAR_MODIFIERS.get(var, []):
-        if set_by_cli(modifier):
-            logger.debug("Var %s=%s (set by user).",
-                var, VAR_MODIFIERS.get(var, []))
-            return True
-
-    return False
-
-
-# static housekeeping var
-# functions attributed are not supported by mypy
-# https://github.com/python/mypy/issues/2087
-set_by_cli.detector = None  # type: ignore
-
-
-def has_default_value(option, value):
-    """Does option have the default value?
-
-    If the default value of option is not known, False is returned.
-
-    :param str option: configuration variable being considered
-    :param value: value of the configuration variable named option
-
-    :returns: True if option has the default value, otherwise, False
-    :rtype: bool
-
-    """
-    if helpful_parser is not None:
-        return (option in helpful_parser.defaults and
-                helpful_parser.defaults[option] == value)
-    return False
-
-
-def option_was_set(option, value):
-    """Was option set by the user or does it differ from the default?
-
-    :param str option: configuration variable being considered
-    :param value: value of the configuration variable named option
-
-    :returns: True if the option was set, otherwise, False
-    :rtype: bool
-
-    """
-    return set_by_cli(option) or not has_default_value(option, value)
-
-
-def argparse_type(variable):
+def argparse_type(variable: Any) -> Type:
     """Return our argparse type function for a config variable (default: str)"""
     # pylint: disable=protected-access
     if helpful_parser is not None:
-        for action in helpful_parser.parser._actions:
+        for action in helpful_parser.actions:
             if action.type is not None and action.dest == variable:
                 return action.type
     return str

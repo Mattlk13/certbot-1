@@ -1,11 +1,19 @@
 """Certbot constants."""
+import atexit
 import logging
-
-import pkg_resources
+import sys
+from contextlib import ExitStack
+from typing import Any
+from typing import Dict
 
 from acme import challenges
 from certbot.compat import misc
 from certbot.compat import os
+
+if sys.version_info >= (3, 9):  # pragma: no cover
+    import importlib.resources as importlib_resources
+else:  # pragma: no cover
+    import importlib_resources
 
 SETUPTOOLS_PLUGINS_ENTRY_POINT = "certbot.plugins"
 """Setuptools entry point group name for plugins."""
@@ -13,18 +21,20 @@ SETUPTOOLS_PLUGINS_ENTRY_POINT = "certbot.plugins"
 OLD_SETUPTOOLS_PLUGINS_ENTRY_POINT = "letsencrypt.plugins"
 """Plugins Setuptools entry point before rename."""
 
-CLI_DEFAULTS = dict(
+CLI_DEFAULTS: Dict[str, Any] = dict(  # pylint: disable=use-dict-literal
     config_files=[
         os.path.join(misc.get_default_folder('config'), 'cli.ini'),
-        # http://freedesktop.org/wiki/Software/xdg-user-dirs/
+        # https://freedesktop.org/wiki/Software/xdg-user-dirs/
         os.path.join(os.environ.get("XDG_CONFIG_HOME", "~/.config"),
                      "letsencrypt", "cli.ini"),
     ],
 
     # Main parser
-    verbose_count=-int(logging.INFO / 10),
+    verbose_count=0,
+    verbose_level=None,
     text_mode=False,
     max_log_backups=1000,
+    preconfigured_renewal=False,
     noninteractive_mode=False,
     force_interactive=False,
     domains=[],
@@ -56,6 +66,8 @@ CLI_DEFAULTS = dict(
     https_port=443,
     break_my_certs=False,
     rsa_key_size=2048,
+    elliptic_curve="secp256r1",
+    key_type="ecdsa",
     must_staple=False,
     redirect=None,
     auto_hsts=False,
@@ -63,14 +75,18 @@ CLI_DEFAULTS = dict(
     uir=None,
     staple=None,
     strict_permissions=False,
+    preferred_chain=None,
     pref_challs=[],
     validate_hooks=True,
     directory_hooks=True,
     reuse_key=False,
+    new_key=False,
     disable_renew_updates=False,
     random_sleep_on_renew=True,
     eab_hmac_key=None,
     eab_kid=None,
+    issuance_timeout=90,
+    run_deploy_hooks=False,
 
     # Subparsers
     num=None,
@@ -103,7 +119,6 @@ CLI_DEFAULTS = dict(
     manual=False,
     webroot=False,
     dns_cloudflare=False,
-    dns_cloudxns=False,
     dns_digitalocean=False,
     dns_dnsimple=False,
     dns_dnsmadeeasy=False,
@@ -133,25 +148,24 @@ REVOCATION_REASONS = {
     "superseded": 4,
     "cessationofoperation": 5}
 
-"""Defaults for CLI flags and `.IConfig` attributes."""
+"""Defaults for CLI flags and `certbot.configuration.NamespaceConfig` attributes."""
 
-QUIET_LOGGING_LEVEL = logging.WARNING
+QUIET_LOGGING_LEVEL = logging.ERROR
 """Logging level to use in quiet mode."""
 
-RENEWER_DEFAULTS = dict(
-    renewer_enabled="yes",
-    renew_before_expiry="30 days",
-    # This value should ensure that there is never a deployment delay by
-    # default.
-    deploy_before_expiry="99 years",
-)
-"""Defaults for renewer script."""
+DEFAULT_LOGGING_LEVEL = logging.WARNING
+"""Default logging level to use when not in quiet mode."""
+
+RENEWER_DEFAULTS = {
+    "renew_before_expiry": "30 days",
+}
+"""Defaults for `certbot renew`."""
 
 ARCHIVE_DIR = "archive"
-"""Archive directory, relative to `IConfig.config_dir`."""
+"""Archive directory, relative to `certbot.configuration.NamespaceConfig.config_dir`."""
 
 CONFIG_DIRS_MODE = 0o755
-"""Directory mode for ``.IConfig.config_dir`` et al."""
+"""Directory mode for ``certbot.configuration.NamespaceConfig.config_dir`` et al."""
 
 ACCOUNTS_DIR = "accounts"
 """Directory where all accounts are saved."""
@@ -165,26 +179,27 @@ LE_REUSE_SERVERS = {
 """Servers that can reuse accounts from other servers."""
 
 BACKUP_DIR = "backups"
-"""Directory (relative to `IConfig.work_dir`) where backups are kept."""
-
-CSR_DIR = "csr"
-"""See `.IConfig.csr_dir`."""
+"""Directory (relative to `certbot.configuration.NamespaceConfig.work_dir`)
+where backups are kept."""
 
 IN_PROGRESS_DIR = "IN_PROGRESS"
 """Directory used before a permanent checkpoint is finalized (relative to
-`IConfig.work_dir`)."""
+`certbot.configuration.NamespaceConfig.work_dir`)."""
 
 KEY_DIR = "keys"
-"""Directory (relative to `IConfig.config_dir`) where keys are saved."""
+"""Directory (relative to `certbot.configuration.NamespaceConfig.config_dir`)
+where keys are saved."""
 
 LIVE_DIR = "live"
-"""Live directory, relative to `IConfig.config_dir`."""
+"""Live directory, relative to `certbot.configuration.NamespaceConfig.config_dir`."""
 
 TEMP_CHECKPOINT_DIR = "temp_checkpoint"
-"""Temporary checkpoint directory (relative to `IConfig.work_dir`)."""
+"""Temporary checkpoint directory, relative
+to `certbot.configuration.NamespaceConfig.work_dir`."""
 
 RENEWAL_CONFIGS_DIR = "renewal"
-"""Renewal configs directory, relative to `IConfig.config_dir`."""
+"""Renewal configs directory, relative
+to `certbot.configuration.NamespaceConfig.config_dir`."""
 
 RENEWAL_HOOKS_DIR = "renewal-hooks"
 """Basename of directory containing hooks to run with the renew command."""
@@ -199,20 +214,29 @@ RENEWAL_POST_HOOKS_DIR = "post"
 """Basename of directory containing post-hooks to run with the renew command."""
 
 FORCE_INTERACTIVE_FLAG = "--force-interactive"
-"""Flag to disable TTY checking in IDisplay."""
+"""Flag to disable TTY checking in certbot.display.util."""
 
 EFF_SUBSCRIBE_URI = "https://supporters.eff.org/subscribe/certbot"
 """EFF URI used to submit the e-mail address of users who opt-in."""
 
 SSL_DHPARAMS_DEST = "ssl-dhparams.pem"
-"""Name of the ssl_dhparams file as saved in `IConfig.config_dir`."""
+"""Name of the ssl_dhparams file as saved
+in `certbot.configuration.NamespaceConfig.config_dir`."""
 
-SSL_DHPARAMS_SRC = pkg_resources.resource_filename(
-    "certbot", "ssl-dhparams.pem")
+def _generate_ssl_dhparams_src_static() -> str:
+    # This code ensures that the resource is accessible as file for the lifetime of current
+    # Python process, and will be automatically cleaned up on exit.
+    file_manager = ExitStack()
+    atexit.register(file_manager.close)
+    ssl_dhparams_src_ref = importlib_resources.files("certbot") / "ssl-dhparams.pem"
+    return str(file_manager.enter_context(importlib_resources.as_file(ssl_dhparams_src_ref)))
+
+SSL_DHPARAMS_SRC = _generate_ssl_dhparams_src_static()
 """Path to the nginx ssl_dhparams file found in the Certbot distribution."""
 
 UPDATED_SSL_DHPARAMS_DIGEST = ".updated-ssl-dhparams-pem-digest.txt"
-"""Name of the hash of the updated or informed ssl_dhparams as saved in `IConfig.config_dir`."""
+"""Name of the hash of the updated or informed ssl_dhparams as saved
+in `certbot.configuration.NamespaceConfig.config_dir`."""
 
 ALL_SSL_DHPARAMS_HASHES = [
     '9ba6429597aeed2d8617a7705b56e96d044f64b07971659382e426675105654b',

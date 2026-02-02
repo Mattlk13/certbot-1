@@ -1,45 +1,21 @@
-from distutils.version import LooseVersion
 import sys
 
-from setuptools import __version__ as setuptools_version
 from setuptools import find_packages
 from setuptools import setup
-from setuptools.command.test import test as TestCommand
 
-version = '1.6.0.dev0'
+version = '2.12.0.dev0'
 
-# Please update tox.ini when modifying dependency version requirements
 install_requires = [
-    # load_pem_private/public_key (>=0.6)
-    # rsa_recover_prime_factors (>=0.8)
-    'cryptography>=1.2.3',
-    # formerly known as acme.jose:
-    # 1.1.0+ is required to avoid the warnings described at
-    # https://github.com/certbot/josepy/issues/13.
-    'josepy>=1.1.0',
-    # Connection.set_tlsext_host_name (>=0.13)
-    'PyOpenSSL>=0.13.1',
+    'cryptography>=3.2.1',
+    # Josepy 2+ may introduce backward incompatible changes by droping usage of
+    # deprecated PyOpenSSL APIs.
+    'josepy>=1.13.0, <2',
+    # pyOpenSSL 23.1.0 is a bad release: https://github.com/pyca/pyopenssl/issues/1199
+    'PyOpenSSL>=17.5.0,!=23.1.0',
     'pyrfc3339',
-    'pytz',
-    'requests[security]>=2.6.0',  # security extras added in 2.4.1
-    'requests-toolbelt>=0.3.0',
-    'setuptools',
-    'six>=1.9.0',  # needed for python_2_unicode_compatible
-]
-
-setuptools_known_environment_markers = (LooseVersion(setuptools_version) >= LooseVersion('36.2'))
-if setuptools_known_environment_markers:
-    install_requires.append('mock ; python_version < "3.3"')
-elif 'bdist_wheel' in sys.argv[1:]:
-    raise RuntimeError('Error, you are trying to build certbot wheels using an old version '
-                       'of setuptools. Version 36.2+ of setuptools is required.')
-elif sys.version_info < (3,3):
-    install_requires.append('mock')
-
-dev_extras = [
-    'pytest',
-    'pytest-xdist',
-    'tox',
+    'pytz>=2019.3',
+    'requests>=2.20.0',
+    'setuptools>=41.6.0',
 ]
 
 docs_extras = [
@@ -47,43 +23,41 @@ docs_extras = [
     'sphinx_rtd_theme',
 ]
 
-
-class PyTest(TestCommand):
-    user_options = []
-
-    def initialize_options(self):
-        TestCommand.initialize_options(self)
-        self.pytest_args = ''
-
-    def run_tests(self):
-        import shlex
-        # import here, cause outside the eggs aren't loaded
-        import pytest
-        errno = pytest.main(shlex.split(self.pytest_args))
-        sys.exit(errno)
-
+test_extras = [
+    # In theory we could scope importlib_resources to env marker 'python_version<"3.9"'. But this
+    # makes the pinning mechanism emit warnings when running `poetry lock` because in the corner
+    # case of an extra dependency with env marker coming from a setup.py file, it generate the
+    # invalid requirement 'importlib_resource>=1.3.1;python<=3.9;extra=="test"'.
+    # To fix the issue, we do not pass the env marker. This is fine because:
+    # - importlib_resources can be applied to any Python version,
+    # - this is a "test" extra dependency for limited audience,
+    # - it does not change anything at the end for the generated requirement files.
+    'importlib_resources>=1.3.1',
+    'pytest',
+    'pytest-xdist',
+    'typing-extensions',
+]
 
 setup(
     name='acme',
     version=version,
     description='ACME protocol implementation in Python',
-    url='https://github.com/letsencrypt/letsencrypt',
+    url='https://github.com/certbot/certbot',
     author="Certbot Project",
-    author_email='client-dev@letsencrypt.org',
+    author_email='certbot-dev@eff.org',
     license='Apache License 2.0',
-    python_requires='>=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*',
+    python_requires='>=3.8',
     classifiers=[
         'Development Status :: 5 - Production/Stable',
         'Intended Audience :: Developers',
         'License :: OSI Approved :: Apache Software License',
         'Programming Language :: Python',
-        'Programming Language :: Python :: 2',
-        'Programming Language :: Python :: 2.7',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.5',
-        'Programming Language :: Python :: 3.6',
-        'Programming Language :: Python :: 3.7',
         'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
         'Topic :: Internet :: WWW/HTTP',
         'Topic :: Security',
     ],
@@ -92,10 +66,7 @@ setup(
     include_package_data=True,
     install_requires=install_requires,
     extras_require={
-        'dev': dev_extras,
         'docs': docs_extras,
+        'test': test_extras,
     },
-    test_suite='acme',
-    tests_require=["pytest"],
-    cmdclass={"test": PyTest},
 )

@@ -1,19 +1,24 @@
 """Compat module to handle files security on Windows and Linux"""
 from __future__ import absolute_import
 
+from contextlib import contextmanager
 import errno
 import os  # pylint: disable=os-module-forbidden
 import stat
-
-from acme.magic_typing import List
+import sys
+from typing import Any
+from typing import Dict
+from typing import Generator
+from typing import List
+from typing import Optional
 
 try:
     import ntsecuritycon
-    import win32security
-    import win32con
-    import win32api
-    import win32file
     import pywintypes
+    import win32api
+    import win32con
+    import win32file
+    import win32security
     import winerror
 except ImportError:
     POSIX_MODE = True
@@ -28,15 +33,14 @@ else:
 # that could happen with this kind of pattern.
 class _WindowsUmask:
     """Store the current umask to apply on Windows"""
-    def __init__(self):
+    def __init__(self) -> None:
         self.mask = 0o022
 
 
 _WINDOWS_UMASK = _WindowsUmask()
 
 
-def chmod(file_path, mode):
-    # type: (str, int) -> None
+def chmod(file_path: str, mode: int) -> None:
     """
     Apply a POSIX mode on given file_path:
 
@@ -57,8 +61,7 @@ def chmod(file_path, mode):
         _apply_win_mode(file_path, mode)
 
 
-def umask(mask):
-    # type: (int) -> int
+def umask(mask: int) -> int:
     """
     Set the current numeric umask and return the previous umask. On Linux, the built-in umask
     method is used. On Windows, our Certbot-side implementation is used.
@@ -75,6 +78,23 @@ def umask(mask):
     return previous_umask
 
 
+@contextmanager
+def temp_umask(mask: int) -> Generator[None, None, None]:
+    """
+    Apply a umask temporarily, meant to be used in a `with` block. Uses the Certbot
+    implementation of umask.
+
+    :param int mask: The user file-creation mode mask to apply temporarily
+    """
+    old_umask: Optional[int] = None
+    try:
+        old_umask = umask(mask)
+        yield None
+    finally:
+        if old_umask is not None:
+            umask(old_umask)
+
+
 # One could ask why there is no copy_ownership() function, or even a reimplementation
 # of os.chown() that would modify the ownership of file without touching the mode itself.
 # This is because on Windows, it would require recalculating the existing DACL against
@@ -84,8 +104,8 @@ def umask(mask):
 # Since copying and editing arbitrary DACL is very difficult, and since we actually know
 # the mode to apply at the time the owner of a file should change, it is easier to just
 # change the owner, then reapply the known mode, as copy_ownership_and_apply_mode() does.
-def copy_ownership_and_apply_mode(src, dst, mode, copy_user, copy_group):
-    # type: (str, str, int, bool, bool) -> None
+def copy_ownership_and_apply_mode(src: str, dst: str, mode: int,
+                                  copy_user: bool, copy_group: bool) -> None:
     """
     Copy ownership (user and optionally group on Linux) from the source to the
     destination, then apply given mode in compatible way for Linux and Windows.
@@ -117,8 +137,8 @@ def copy_ownership_and_apply_mode(src, dst, mode, copy_user, copy_group):
 # equivalent POSIX mode, because ownership and mode are copied altogether on the destination
 # file, so no recomputing of the DACL against the new owner is needed, as it would be
 # for a copy_ownership alone method.
-def copy_ownership_and_mode(src, dst, copy_user=True, copy_group=True):
-    # type: (str, str, bool, bool) -> None
+def copy_ownership_and_mode(src: str, dst: str,
+                            copy_user: bool = True, copy_group: bool = True) -> None:
     """
     Copy ownership (user and optionally group on Linux) and mode/DACL
     from the source to the destination.
@@ -142,8 +162,7 @@ def copy_ownership_and_mode(src, dst, copy_user=True, copy_group=True):
         _copy_win_mode(src, dst)
 
 
-def check_mode(file_path, mode):
-    # type: (str, int) -> bool
+def check_mode(file_path: str, mode: int) -> bool:
     """
     Check if the given mode matches the permissions of the given file.
     On Linux, will make a direct comparison, on Windows, mode will be compared against
@@ -160,8 +179,7 @@ def check_mode(file_path, mode):
     return _check_win_mode(file_path, mode)
 
 
-def check_owner(file_path):
-    # type: (str) -> bool
+def check_owner(file_path: str) -> bool:
     """
     Check if given file is owned by current user.
 
@@ -170,10 +188,7 @@ def check_owner(file_path):
     :return: True if given file is owned by current user, False otherwise.
     """
     if POSIX_MODE:
-        # On Windows, os.getuid does not exist. This is checked through POSIX_MODE value,
-        # but MyPy/PyLint does not know it and raises an error here on Windows.
-        # We disable specifically the check to fix the issue.
-        return os.stat(file_path).st_uid == os.getuid()  # type: ignore
+        return os.stat(file_path).st_uid == os.getuid()
 
     # Get owner sid of the file
     security = win32security.GetFileSecurity(file_path, win32security.OWNER_SECURITY_INFORMATION)
@@ -183,8 +198,7 @@ def check_owner(file_path):
     return _get_current_user() == user
 
 
-def check_permissions(file_path, mode):
-    # type: (str, int) -> bool
+def check_permissions(file_path: str, mode: int) -> bool:
     """
     Check if given file has the given mode and is owned by current user.
 
@@ -196,8 +210,7 @@ def check_permissions(file_path, mode):
     return check_owner(file_path) and check_mode(file_path, mode)
 
 
-def open(file_path, flags, mode=0o777):  # pylint: disable=redefined-builtin
-    # type: (str, int, int) -> int
+def open(file_path: str, flags: int, mode: int = 0o777) -> int:  # pylint: disable=redefined-builtin
     """
     Wrapper of original os.open function, that will ensure on Windows that given mode
     is correctly applied.
@@ -261,13 +274,12 @@ def open(file_path, flags, mode=0o777):  # pylint: disable=redefined-builtin
         return os.open(file_path, flags ^ os.O_CREAT ^ os.O_EXCL)
 
     # Windows: general case, we call os.open, let exceptions be thrown, then chmod if all is fine.
-    handle = os.open(file_path, flags)
+    fd = os.open(file_path, flags)
     chmod(file_path, mode)
-    return handle
+    return fd
 
 
-def makedirs(file_path, mode=0o777):
-    # type: (str, int) -> None
+def makedirs(file_path: str, mode: int = 0o777) -> None:
     """
     Rewrite of original os.makedirs function, that will ensure on Windows that given mode
     is correctly applied.
@@ -299,8 +311,7 @@ def makedirs(file_path, mode=0o777):
         umask(current_umask)
 
 
-def mkdir(file_path, mode=0o777):
-    # type: (str, int) -> None
+def mkdir(file_path: str, mode: int = 0o777) -> None:
     """
     Rewrite of original os.mkdir function, that will ensure on Windows that given mode
     is correctly applied.
@@ -331,8 +342,7 @@ def mkdir(file_path, mode=0o777):
     return None
 
 
-def replace(src, dst):
-    # type: (str, str) -> None
+def replace(src: str, dst: str) -> None:
     """
     Rename a file to a destination path and handles situations where the destination exists.
 
@@ -340,16 +350,16 @@ def replace(src, dst):
     :param str dst: The new file path.
     """
     if hasattr(os, 'replace'):
-        # Use replace if possible. On Windows, only Python >= 3.5 is supported
-        # so we can assume that os.replace() is always available for this platform.
+        # Use replace if possible. Since we don't support Python 2 on Windows
+        # and os.replace() was added in Python 3.3, we can assume that
+        # os.replace() is always available on Windows.
         getattr(os, 'replace')(src, dst)
     else:
         # Otherwise, use os.rename() that behaves like os.replace() on Linux.
         os.rename(src, dst)
 
 
-def realpath(file_path):
-    # type: (str) -> str
+def realpath(file_path: str) -> str:
     """
     Find the real path for the given path. This method resolves symlinks, including
     recursive symlinks, and is protected against symlinks that creates an infinite loop.
@@ -360,7 +370,8 @@ def realpath(file_path):
     """
     original_path = file_path
 
-    if POSIX_MODE:
+    # Since Python 3.8, os.path.realpath also resolves symlinks on Windows.
+    if POSIX_MODE or sys.version_info >= (3, 8):
         path = os.path.realpath(file_path)
         if os.path.islink(path):
             # If path returned by realpath is still a link, it means that it failed to
@@ -369,7 +380,7 @@ def realpath(file_path):
             raise RuntimeError('Error, link {0} is a loop!'.format(original_path))
         return path
 
-    inspected_paths = []  # type: List[str]
+    inspected_paths: List[str] = []
     while os.path.islink(file_path):
         link_path = file_path
         file_path = os.readlink(file_path)
@@ -382,15 +393,41 @@ def realpath(file_path):
     return os.path.abspath(file_path)
 
 
+def readlink(link_path: str) -> str:
+    """
+    Return a string representing the path to which the symbolic link points.
+
+    :param str link_path: The symlink path to resolve
+    :return: The path the symlink points to
+    :returns: str
+    :raise: ValueError if a long path (260> characters) is encountered on Windows
+    """
+    path = os.readlink(link_path)
+
+    if POSIX_MODE or not path.startswith('\\\\?\\'):
+        return path
+
+    # At this point, we know we are on Windows and that the path returned uses
+    # the extended form which is done for all paths in Python 3.8+
+
+    # Max length of a normal path is 260 characters on Windows, including the non printable
+    # termination character "<NUL>". The termination character is not included in Python
+    # strings, giving a max length of 259 characters, + 4 characters for the extended form
+    # prefix, to an effective max length 263 characters on a string representing a normal path.
+    if len(path) < 264:
+        return path[4:]
+
+    raise ValueError("Long paths are not supported by Certbot on Windows.")
+
+
 # On Windows is_executable run from an unprivileged shell may claim that a path is
-# executable when it is excutable only if run from a privileged shell. This result
+# executable when it is executable only if run from a privileged shell. This result
 # is due to the fact that GetEffectiveRightsFromAcl calculate effective rights
 # without taking into consideration if the target user has currently required the
 # elevated privileges or not. However this is not a problem since certbot always
 # requires to be run under a privileged shell, so the user will always benefit
 # from the highest (privileged one) set of permissions on a given file.
-def is_executable(path):
-    # type: (str) -> bool
+def is_executable(path: str) -> bool:
     """
     Is path an executable file?
 
@@ -404,8 +441,7 @@ def is_executable(path):
     return _win_is_executable(path)
 
 
-def has_world_permissions(path):
-    # type: (str) -> bool
+def has_world_permissions(path: str) -> bool:
     """
     Check if everybody/world has any right (read/write/execute) on a file given its path.
 
@@ -426,8 +462,7 @@ def has_world_permissions(path):
     }))
 
 
-def compute_private_key_mode(old_key, base_mode):
-    # type: (str, int) -> int
+def compute_private_key_mode(old_key: str, base_mode: int) -> int:
     """
     Calculate the POSIX mode to apply to a private key given the previous private key.
 
@@ -448,8 +483,7 @@ def compute_private_key_mode(old_key, base_mode):
     return base_mode
 
 
-def has_same_ownership(path1, path2):
-    # type: (str, str) -> bool
+def has_same_ownership(path1: str, path2: str) -> bool:
     """
     Return True if the ownership of two files given their respective path is the same.
     On Windows, ownership is checked against owner only, since files do not have a group owner.
@@ -474,8 +508,7 @@ def has_same_ownership(path1, path2):
     return user1 == user2
 
 
-def has_min_permissions(path, min_mode):
-    # type: (str, int) -> bool
+def has_min_permissions(path: str, min_mode: int) -> bool:
     """
     Check if a file given its path has at least the permissions defined by the given minimal mode.
     On Windows, group permissions are ignored since files do not have a group owner.
@@ -520,7 +553,7 @@ def has_min_permissions(path, min_mode):
     return True
 
 
-def _win_is_executable(path):
+def _win_is_executable(path: str) -> bool:
     if not os.path.isfile(path):
         return False
 
@@ -536,7 +569,7 @@ def _win_is_executable(path):
     return mode & ntsecuritycon.FILE_GENERIC_EXECUTE == ntsecuritycon.FILE_GENERIC_EXECUTE
 
 
-def _apply_win_mode(file_path, mode):
+def _apply_win_mode(file_path: str, mode: int) -> None:
     """
     This function converts the given POSIX mode into a Windows ACL list, and applies it to the
     file given its path. If the given path is a symbolic link, it will resolved to apply the
@@ -555,7 +588,7 @@ def _apply_win_mode(file_path, mode):
     win32security.SetFileSecurity(file_path, win32security.DACL_SECURITY_INFORMATION, security)
 
 
-def _generate_dacl(user_sid, mode, mask=None):
+def _generate_dacl(user_sid: Any, mode: int, mask: Optional[int] = None) -> Any:
     if mask:
         mode = mode & (0o777 - mask)
     analysis = _analyze_mode(mode)
@@ -591,7 +624,7 @@ def _generate_dacl(user_sid, mode, mask=None):
     return dacl
 
 
-def _analyze_mode(mode):
+def _analyze_mode(mode: int) -> Dict[str, Dict[str, int]]:
     return {
         'user': {
             'read': mode & stat.S_IRUSR,
@@ -606,7 +639,7 @@ def _analyze_mode(mode):
     }
 
 
-def _copy_win_ownership(src, dst):
+def _copy_win_ownership(src: str, dst: str) -> None:
     # Resolve symbolic links
     src = realpath(src)
 
@@ -621,7 +654,7 @@ def _copy_win_ownership(src, dst):
     win32security.SetFileSecurity(dst, win32security.OWNER_SECURITY_INFORMATION, security_dst)
 
 
-def _copy_win_mode(src, dst):
+def _copy_win_mode(src: str, dst: str) -> None:
     # Resolve symbolic links
     src = realpath(src)
 
@@ -634,7 +667,7 @@ def _copy_win_mode(src, dst):
     win32security.SetFileSecurity(dst, win32security.DACL_SECURITY_INFORMATION, security_dst)
 
 
-def _generate_windows_flags(rights_desc):
+def _generate_windows_flags(rights_desc: Dict[str, int]) -> int:
     # Some notes about how each POSIX right is interpreted.
     #
     # For the rights read and execute, we have a pretty bijective relation between
@@ -665,7 +698,7 @@ def _generate_windows_flags(rights_desc):
     return flag
 
 
-def _check_win_mode(file_path, mode):
+def _check_win_mode(file_path: str, mode: int) -> bool:
     # Resolve symbolic links
     file_path = realpath(file_path)
     # Get current dacl file
@@ -687,7 +720,7 @@ def _check_win_mode(file_path, mode):
     return _compare_dacls(dacl, ref_dacl)
 
 
-def _compare_dacls(dacl1, dacl2):
+def _compare_dacls(dacl1: Any, dacl2: Any) -> bool:
     """
     This method compare the two given DACLs to check if they are identical.
     Identical means here that they contains the same set of ACEs in the same order.
@@ -696,7 +729,7 @@ def _compare_dacls(dacl1, dacl2):
             [dacl2.GetAce(index) for index in range(dacl2.GetAceCount())])
 
 
-def _get_current_user():
+def _get_current_user() -> Any:
     """
     Return the pySID corresponding to the current user.
     """

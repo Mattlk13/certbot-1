@@ -4,13 +4,19 @@ Certbot PyLint plugin.
 The built-in ImportChecker of Pylint does a similar job to ForbidStandardOsModule to detect
 deprecated modules. You can check its behavior as a reference to what is coded here.
 See https://github.com/PyCQA/pylint/blob/b20a2984c94e2946669d727dbda78735882bf50a/pylint/checkers/imports.py#L287
-See http://docs.pylint.org/plugins.html
+See https://docs.pytest.org/en/latest/writing_plugins.html
 """
-from pylint.checkers import BaseChecker
-from pylint.interfaces import IAstroidChecker
+import os.path
+import re
 
-# Modules in theses packages can import the os module.
-WHITELIST_PACKAGES = ['acme', 'certbot_compatibility_test', 'lock_test']
+from pylint.checkers import BaseChecker
+
+# Modules whose file is matching one of these paths can import the os module.
+WHITELIST_PATHS = [
+    '/acme/acme/',
+    '/certbot-ci/',
+    '/certbot-compatibility-test/',
+]
 
 
 class ForbidStandardOsModule(BaseChecker):
@@ -18,15 +24,14 @@ class ForbidStandardOsModule(BaseChecker):
     This checker ensures that standard os module (and submodules) is not imported by certbot
     modules. Otherwise an 'os-module-forbidden' error will be registered for the faulty lines.
     """
-    __implements__ = IAstroidChecker
 
     name = 'forbid-os-module'
     msgs = {
         'E5001': (
             'Forbidden use of os module, certbot.compat.os must be used instead',
             'os-module-forbidden',
-            'Some methods from the standard os module cannot be used for security reasons on Windows: '
-            'the safe wrapper certbot.compat.os must be used instead in Certbot.'
+            'Some methods from the standard os module cannot be used for security reasons on '
+            'Windows: the safe wrapper certbot.compat.os must be used instead in Certbot.'
         )
     }
     priority = -1
@@ -48,5 +53,5 @@ def register(linter):
 
 def _check_disabled(node):
     module = node.root()
-    return any(package for package in WHITELIST_PACKAGES
-               if module.name.startswith(package + '.') or module.name == package)
+    return any(path for path in WHITELIST_PATHS
+               if os.path.normpath(path) in os.path.normpath(module.file))

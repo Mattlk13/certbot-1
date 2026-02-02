@@ -1,27 +1,28 @@
 """DNS Authenticator for Google Cloud DNS."""
-import json
 import logging
+from typing import Any
+from typing import Callable
+from typing import Dict
+from typing import Optional
 
+import google.auth
+
+from google.auth import exceptions as googleauth_exceptions
 from googleapiclient import discovery
 from googleapiclient import errors as googleapiclient_errors
-import httplib2
-from oauth2client.service_account import ServiceAccountCredentials
-import zope.interface
 
 from certbot import errors
-from certbot import interfaces
 from certbot.plugins import dns_common
 
 logger = logging.getLogger(__name__)
 
+ADC_URL = 'https://cloud.google.com/docs/authentication/application-default-credentials'
 ACCT_URL = 'https://developers.google.com/identity/protocols/OAuth2ServiceAccount#creatinganaccount'
 PERMISSIONS_URL = 'https://cloud.google.com/dns/access-control#permissions_and_roles'
 METADATA_URL = 'http://metadata.google.internal/computeMetadata/v1/'
 METADATA_HEADERS = {'Metadata-Flavor': 'Google'}
 
 
-@zope.interface.implementer(interfaces.IAuthenticator)
-@zope.interface.provider(interfaces.IPluginFactory)
 class Authenticator(dns_common.DNSAuthenticator):
     """DNS Authenticator for Google Cloud DNS
 
@@ -31,66 +32,87 @@ class Authenticator(dns_common.DNSAuthenticator):
     description = ('Obtain certificates using a DNS TXT record (if you are using Google Cloud DNS '
                    'for DNS).')
     ttl = 60
-
-    def __init__(self, *args, **kwargs):
-        super(Authenticator, self).__init__(*args, **kwargs)
-        self.credentials = None
+    google_client = None
 
     @classmethod
-    def add_parser_arguments(cls, add):  # pylint: disable=arguments-differ
-        super(Authenticator, cls).add_parser_arguments(add, default_propagation_seconds=60)
+    def add_parser_arguments(cls, add: Callable[..., None],
+                             default_propagation_seconds: int = 60) -> None:
+        super().add_parser_arguments(add, default_propagation_seconds=60)
         add('credentials',
-            help=('Path to Google Cloud DNS service account JSON file. (See {0} for' +
-                  'information about creating a service account and {1} for information about the' +
-                  'required permissions.)').format(ACCT_URL, PERMISSIONS_URL),
+            help=('Path to Google Cloud DNS service account JSON file to use instead of relying on'
+                  ' Application Default Credentials (ADC). (See {0} for information about ADC, {1}'
+                  ' for information about creating a service account, and {2} for information about'
+                  ' the permissions required to modify Cloud DNS records.)')
+                  .format(ADC_URL, ACCT_URL, PERMISSIONS_URL),
             default=None)
 
-    def more_info(self): # pylint: disable=missing-function-docstring
+        add('project',
+            help=('The ID of the Google Cloud project that the Google Cloud DNS managed zone(s)' +
+                  ' reside in. This will be determined automatically if not specified.'),
+            default=None)
+
+    def more_info(self) -> str:
         return 'This plugin configures a DNS TXT record to respond to a dns-01 challenge using ' + \
                'the Google Cloud DNS API.'
 
-    def _setup_credentials(self):
-        if self.conf('credentials') is None:
-            try:
-                # use project_id query to check for availability of google metadata server
-                # we won't use the result but know we're not on GCP when an exception is thrown
-                _GoogleClient.get_project_id()
-            except (ValueError, httplib2.ServerNotFoundError):
-                raise errors.PluginError('Unable to get Google Cloud Metadata and no credentials'
-                                         ' specified. Automatic credential lookup is only '
-                                         'available on Google Cloud Platform. Please configure'
-                                         ' credentials using --dns-google-credentials <file>')
-        else:
+    def _setup_credentials(self) -> None:
+        if self.conf('credentials') is not None:
             self._configure_file('credentials',
                                  'path to Google Cloud DNS service account JSON file')
 
             dns_common.validate_file_permissions(self.conf('credentials'))
 
-    def _perform(self, domain, validation_name, validation):
+        try:
+            self._get_google_client()
+        except googleauth_exceptions.DefaultCredentialsError as e:
+            raise errors.PluginError('Authentication using Google Application Default Credentials '
+                                     'failed ({}). Please configure credentials using'
+                                     ' --dns-google-credentials <file>'.format(e))
+
+    def _perform(self, domain: str, validation_name: str, validation: str) -> None:
         self._get_google_client().add_txt_record(domain, validation_name, validation, self.ttl)
 
-    def _cleanup(self, domain, validation_name, validation):
+    def _cleanup(self, domain: str, validation_name: str, validation: str) -> None:
         self._get_google_client().del_txt_record(domain, validation_name, validation, self.ttl)
 
-    def _get_google_client(self):
-        return _GoogleClient(self.conf('credentials'))
+    def _get_google_client(self) -> '_GoogleClient':
+        if self.google_client is None:
+            self.google_client = _GoogleClient(self.conf('credentials'), self.conf('project'))
+        return self.google_client
 
 
-class _GoogleClient(object):
+
+class _GoogleClient:
     """
     Encapsulates all communication with the Google Cloud DNS API.
     """
 
-    def __init__(self, account_json=None, dns_api=None):
+    def __init__(self, account_json: Optional[str] = None,
+                 dns_project_id: Optional[str] = None,
+                 dns_api: Optional[discovery.Resource] = None) -> None:
 
         scopes = ['https://www.googleapis.com/auth/ndev.clouddns.readwrite']
+        credentials = None
+        project_id = None
+
         if account_json is not None:
-            credentials = ServiceAccountCredentials.from_json_keyfile_name(account_json, scopes)
-            with open(account_json) as account:
-                self.project_id = json.load(account)['project_id']
+            try:
+                credentials, project_id = google.auth.load_credentials_from_file(
+                    account_json, scopes=scopes)
+            except googleauth_exceptions.GoogleAuthError as e:
+                raise errors.PluginError(
+                    "Error loading credentials file '{}': {}".format(account_json, e))
         else:
-            credentials = None
-            self.project_id = self.get_project_id()
+            credentials, project_id = google.auth.default(scopes=scopes)
+
+        if dns_project_id is not None:
+            project_id = dns_project_id
+
+        if not project_id:
+            raise errors.PluginError('The Google Cloud project could not be automatically '
+                                     'determined. Please configure it using --dns-google-project'
+                                     ' <project>.')
+        self.project_id = project_id
 
         if not dns_api:
             self.dns = discovery.build('dns', 'v1',
@@ -99,7 +121,8 @@ class _GoogleClient(object):
         else:
             self.dns = dns_api
 
-    def add_txt_record(self, domain, record_name, record_content, record_ttl):
+    def add_txt_record(self, domain: str, record_name: str, record_content: str,
+                       record_ttl: int) -> None:
         """
         Add a TXT record using the supplied information.
 
@@ -114,10 +137,13 @@ class _GoogleClient(object):
 
         record_contents = self.get_existing_txt_rrset(zone_id, record_name)
         if record_contents is None:
-            record_contents = []
-        add_records = record_contents[:]
+            # If it wasn't possible to fetch the records at this label (missing .list permission),
+            # assume there aren't any (#5678). If there are actually records here, this will fail
+            # with HTTP 409/412 API errors.
+            record_contents = {"rrdatas": []}
+        add_records = record_contents["rrdatas"][:]
 
-        if "\""+record_content+"\"" in record_contents:
+        if "\""+record_content+"\"" in record_contents["rrdatas"]:
             # The process was interrupted previously and validation token exists
             return
 
@@ -136,15 +162,15 @@ class _GoogleClient(object):
             ],
         }
 
-        if record_contents:
+        if record_contents["rrdatas"]:
             # We need to remove old records in the same request
             data["deletions"] = [
                 {
                     "kind": "dns#resourceRecordSet",
                     "type": "TXT",
                     "name": record_name + ".",
-                    "rrdatas": record_contents,
-                    "ttl": record_ttl,
+                    "rrdatas": record_contents["rrdatas"],
+                    "ttl": record_contents["ttl"],
                 },
             ]
 
@@ -165,7 +191,8 @@ class _GoogleClient(object):
             raise errors.PluginError('Error communicating with the Google Cloud DNS API: {0}'
                                      .format(e))
 
-    def del_txt_record(self, domain, record_name, record_content, record_ttl):
+    def del_txt_record(self, domain: str, record_name: str, record_content: str,
+                       record_ttl: int) -> None:
         """
         Delete a TXT record using the supplied information.
 
@@ -178,13 +205,16 @@ class _GoogleClient(object):
 
         try:
             zone_id = self._find_managed_zone_id(domain)
-        except errors.PluginError as e:
+        except errors.PluginError:
             logger.warning('Error finding zone. Skipping cleanup.')
             return
 
         record_contents = self.get_existing_txt_rrset(zone_id, record_name)
         if record_contents is None:
-            record_contents = ["\"" + record_content + "\""]
+            # If it wasn't possible to fetch the records at this label (missing .list permission),
+            # assume there aren't any (#5678). If there are actually records here, this will fail
+            # with HTTP 409/412 API errors.
+            record_contents = {"rrdatas": ["\"" + record_content + "\""], "ttl": record_ttl}
 
         data = {
             "kind": "dns#change",
@@ -193,14 +223,15 @@ class _GoogleClient(object):
                     "kind": "dns#resourceRecordSet",
                     "type": "TXT",
                     "name": record_name + ".",
-                    "rrdatas": record_contents,
-                    "ttl": record_ttl,
+                    "rrdatas": record_contents["rrdatas"],
+                    "ttl": record_contents["ttl"],
                 },
             ],
         }
 
         # Remove the record being deleted from the list
-        readd_contents = [r for r in record_contents if r != "\"" + record_content + "\""]
+        readd_contents = [r for r in record_contents["rrdatas"]
+                            if r != "\"" + record_content + "\""]
         if readd_contents:
             # We need to remove old records in the same request
             data["additions"] = [
@@ -209,7 +240,7 @@ class _GoogleClient(object):
                     "type": "TXT",
                     "name": record_name + ".",
                     "rrdatas": readd_contents,
-                    "ttl": record_ttl,
+                    "ttl": record_contents["ttl"],
                 },
             ]
 
@@ -221,7 +252,7 @@ class _GoogleClient(object):
         except googleapiclient_errors.Error as e:
             logger.warning('Encountered error deleting TXT record: %s', e)
 
-    def get_existing_txt_rrset(self, zone_id, record_name):
+    def get_existing_txt_rrset(self, zone_id: str, record_name: str) -> Optional[Dict[str, Any]]:
         """
         Get existing TXT records from the RRset for the record name.
 
@@ -231,14 +262,15 @@ class _GoogleClient(object):
         :param str zone_id: The ID of the managed zone.
         :param str record_name: The record name (typically beginning with '_acme-challenge.').
 
-        :returns: List of TXT record values or None
-        :rtype: `list` of `string` or `None`
+        :returns: The resourceRecordSet corresponding to `record_name` or None
+        :rtype: `resourceRecordSet <https://cloud.google.com/dns/docs/reference/v1/resourceRecordSets#resource>` or `None` # pylint: disable=line-too-long
 
         """
         rrs_request = self.dns.resourceRecordSets()
-        request = rrs_request.list(managedZone=zone_id, project=self.project_id)
         # Add dot as the API returns absolute domains
         record_name += "."
+        request = rrs_request.list(project=self.project_id, managedZone=zone_id, name=record_name,
+                                   type="TXT")
         try:
             response = request.execute()
         except googleapiclient_errors.Error:
@@ -246,13 +278,11 @@ class _GoogleClient(object):
                         "requesting a wildcard certificate, this might not work.")
             logger.debug("Error was:", exc_info=True)
         else:
-            if response:
-                for rr in response["rrsets"]:
-                    if rr["name"] == record_name and rr["type"] == "TXT":
-                        return rr["rrdatas"]
+            if response and response["rrsets"]:
+                return response["rrsets"][0]
         return None
 
-    def _find_managed_zone_id(self, domain):
+    def _find_managed_zone_id(self, domain: str) -> str:
         """
         Find the managed zone for a given domain.
 
@@ -276,32 +306,9 @@ class _GoogleClient(object):
 
             for zone in zones:
                 zone_id = zone['id']
-                if 'privateVisibilityConfig' not in zone:
+                if zone['visibility'] == "public":
                     logger.debug('Found id of %s for %s using name %s', zone_id, domain, zone_name)
                     return zone_id
 
         raise errors.PluginError('Unable to determine managed zone for {0} using zone names: {1}.'
                                  .format(domain, zone_dns_name_guesses))
-
-    @staticmethod
-    def get_project_id():
-        """
-        Query the google metadata service for the current project ID
-
-        This only works on Google Cloud Platform
-
-        :raises ServerNotFoundError: Not running on Google Compute or DNS not available
-        :raises ValueError: Server is found, but response code is not 200
-        :returns: project id
-        """
-        url = '{0}project/project-id'.format(METADATA_URL)
-
-        # Request an access token from the metadata server.
-        http = httplib2.Http()
-        r, content = http.request(url, headers=METADATA_HEADERS)
-        if r.status != 200:
-            raise ValueError("Invalid status code: {0}".format(r))
-
-        if isinstance(content, bytes):
-            return content.decode()
-        return content
